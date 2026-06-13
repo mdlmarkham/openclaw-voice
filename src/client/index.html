@@ -659,15 +659,36 @@
 
         function getAudioCtx() {
             // Create or resume the persistent AudioContext
-            // Audio is always 24000Hz (all TTS backends resample to 24kHz)
+            // Server sends 24kHz audio; Safari may create context at different rate,
+            // but the resampling in scheduleAudioChunk handles the mismatch.
             if (!persistentCtx || persistentCtx.state === 'closed') {
-                persistentCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+                // Prefer 24kHz but Safari may override — we resample if needed
+                const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+                try {
+                    persistentCtx = new AudioCtxClass({ sampleRate: 24000 });
+                } catch (e) {
+                    // Safari may reject explicit sampleRate on some versions
+                    persistentCtx = new AudioCtxClass();
+                }
+                // iOS Safari: AudioContext starts suspended, must resume on gesture
+                if (persistentCtx.state === 'suspended') {
+                    persistentCtx.resume();
+                }
+                console.log(`AudioContext created: sampleRate=${persistentCtx.sampleRate}, state=${persistentCtx.state}`);
             }
             if (persistentCtx.state === 'suspended') {
-                // Mobile Safari/Chrome require resume from user gesture
                 persistentCtx.resume();
             }
             return persistentCtx;
+        }
+
+        // Pre-create AudioContext on first user gesture (required for iOS Safari)
+        function unlockAudio() {
+            if (!persistentCtx) {
+                getAudioCtx();
+            } else if (persistentCtx.state === 'suspended') {
+                persistentCtx.resume();
+            }
         }
 
         function handleMessage(msg) {
@@ -950,12 +971,15 @@
                     }
                 });
                 
-                // Recording context at 16kHz (input) — separate from playback at 24kHz
+                // Recording context — Safari may override sampleRate
                 if (audioContext && audioContext.state !== 'closed') {
                     audioContext.close();
                 }
-                audioContext = new AudioContext({ sampleRate: 16000 });
-                
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                } catch (e) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
                 if (audioContext.state === 'suspended') {
                     await audioContext.resume();
                 }
@@ -967,12 +991,28 @@
                 
                 audioProcessor.onaudioprocess = (e) => {
                     if (isRecording && ws && ws.readyState === WebSocket.OPEN) {
-                        const audioData = e.inputBuffer.getChannelData(0);
+                        const rawAudio = e.inputBuffer.getChannelData(0);
+                        // Resample to 16kHz if Safari created context at different rate
+                        let audioData;
+                        if (audioContext.sampleRate !== 16000) {
+                            const ratio = 16000 / audioContext.sampleRate;
+                            const newLen = Math.round(rawAudio.length * ratio);
+                            audioData = new Float32Array(newLen);
+                            for (let i = 0; i < newLen; i++) {
+                                const srcIdx = i / ratio;
+                                const srcFloor = Math.floor(srcIdx);
+                                const srcCeil = Math.min(srcFloor + 1, rawAudio.length - 1);
+                                const frac = srcIdx - srcFloor;
+                                audioData[i] = rawAudio[srcFloor] * (1 - frac) + rawAudio[srcCeil] * frac;
+                            }
+                        } else {
+                            audioData = rawAudio;
+                        }
                         const base64 = float32ToBase64(audioData);
                         ws.send(JSON.stringify({ type: 'audio', data: base64 }));
 
                         // Feed waveform visualizer
-                        const rmsVal = Math.sqrt(audioData.reduce((s, v) => s + v * v, 0) / audioData.length);
+                        const rmsVal = Math.sqrt(rawAudio.reduce((s, v) => s + v * v, 0) / rawAudio.length);
                         micLevel = micLevel * 0.6 + rmsVal * 10 * 0.4;  // Smoothed, scaled
                         micLevel = Math.min(1, micLevel);  // Clamp
                         
@@ -1139,12 +1179,26 @@
             // (we re-assign the const via the outer scope pattern)
         }
         
+        // Global unlock: iOS Safari requires AudioContext resume from user gesture.
+        // Listen on document for ANY first interaction.
+        let audioUnlocked = false;
+        document.addEventListener('touchstart', () => {
+            if (!audioUnlocked) {
+                unlockAudio();
+                audioUnlocked = true;
+            }
+        }, { once: false, passive: true });
+        document.addEventListener('mousedown', () => {
+            if (!audioUnlocked) {
+                unlockAudio();
+                audioUnlocked = true;
+            }
+        }, { once: false, passive: true });
+
         // Push-to-talk (non-continuous)
         voiceBtn.addEventListener('mousedown', () => {
             // Unlock AudioContext on first user gesture (required for mobile Safari/Chrome)
-            if (persistentCtx && persistentCtx.state === 'suspended') {
-                persistentCtx.resume();
-            }
+            unlockAudio();
             if (!continuousMode) startRecording();
         });
         voiceBtn.addEventListener('mouseup', () => {
@@ -1156,9 +1210,7 @@
         voiceBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             // Unlock AudioContext on first touch (required for mobile)
-            if (persistentCtx && persistentCtx.state === 'suspended') {
-                persistentCtx.resume();
-            }
+            unlockAudio();
             if (!continuousMode) startRecording();
         });
         voiceBtn.addEventListener('touchend', () => {
@@ -1167,6 +1219,7 @@
         
         // Tap for continuous mode
         voiceBtn.addEventListener('click', () => {
+            unlockAudio();
             if (continuousMode) {
                 if (isRecording) {
                     userStoppedRecording = true;  // User manually stopped

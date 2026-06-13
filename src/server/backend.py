@@ -1,11 +1,37 @@
 """
 AI Backend module - connects to OpenAI, OpenClaw gateway, or custom backends.
+
+OpenClaw gateway mode: sends only the user message + voice-modality system hint.
+The gateway already maintains full agent persona, memory, and workspace context,
+so we don't duplicate conversation history. This ensures continuity across voice
+and text channels — a conversation started in Telegram continues seamlessly in voice.
+
+Direct OpenAI mode: manages its own conversation history (last 10 turns) since
+there's no external memory store.
 """
 
 import asyncio
 from typing import Optional, List, Dict, AsyncGenerator
 
 from loguru import logger
+
+# Voice-modality system hint: lightweight instruction that adapts agent behavior
+# for spoken output. When using OpenClaw gateway, the agent's full persona
+# (SOUL.md, workspace, memory) is already loaded — we only add the voice hint.
+VOICE_SYSTEM_HINT = (
+    "You are speaking through a voice interface. "
+    "Keep responses concise and conversational — under 50 words unless more detail is needed. "
+    "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
+    "Be warm, direct, and associative."
+)
+
+# Full system prompt for direct OpenAI mode (no gateway memory)
+FULL_SYSTEM_PROMPT = (
+    "You are Métis, a wisdom companion speaking through a voice interface. "
+    "Keep responses concise and conversational — under 50 words unless more detail is needed. "
+    "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
+    "Be warm, direct, and associative. Connect ideas. Ask probing questions."
+)
 
 
 class AIBackend:
@@ -23,12 +49,7 @@ class AIBackend:
         self.url = url
         self.model = model
         self.api_key = api_key
-        self.system_prompt = system_prompt or (
-            "You are Métis, a wisdom companion speaking through a voice interface. "
-            "Keep responses concise and conversational — under 50 words unless more detail is needed. "
-            "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-            "Be warm, direct, and associative. Connect ideas. Ask probing questions."
-        )
+        self.system_prompt = system_prompt or FULL_SYSTEM_PROMPT
         self.conversation_history: List[Dict] = []
         self._client = None
         self._setup_client()
@@ -101,33 +122,42 @@ class AIBackend:
             yield f"I heard you say: {user_message}"
     
     async def _chat_openai(self, user_message: str, model: str = None) -> str:
-        """Chat via OpenAI API."""
+        """Chat via OpenAI-compatible API."""
         use_model = model or self.model
-        # Add user message to history
-        self.conversation_history.append({
-            "role": "user",
-            "content": user_message,
-        })
+        is_openclaw = self.backend_type == "openclaw"
         
-        # Build messages
-        messages = [{"role": "system", "content": self.system_prompt}]
-        messages.extend(self.conversation_history[-10:])  # Last 10 turns
+        if is_openclaw:
+            # OpenClaw gateway: send only voice hint + user message.
+            # Gateway already has full persona, memory, workspace context.
+            # Sending conversation history would duplicate what the gateway tracks,
+            # breaking cross-channel continuity (voice ↔ Telegram ↔ other).
+            messages = [{"role": "system", "content": VOICE_SYSTEM_HINT}]
+            messages.append({"role": "user", "content": user_message})
+        else:
+            # Direct OpenAI: manage our own history since there's no external memory.
+            self.conversation_history.append({
+                "role": "user",
+                "content": user_message,
+            })
+            messages = [{"role": "system", "content": self.system_prompt}]
+            messages.extend(self.conversation_history[-10:])
         
         try:
             response = await self._client.chat.completions.create(
                 model=use_model,
                 messages=messages,
-                max_tokens=500,  # Allow longer for voice
+                max_tokens=500,
                 temperature=0.7,
             )
             
             assistant_message = response.choices[0].message.content
             
-            # Add to history
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": assistant_message,
-            })
+            # Only track history in direct OpenAI mode
+            if not is_openclaw:
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": assistant_message,
+                })
             
             return assistant_message
             
@@ -136,17 +166,23 @@ class AIBackend:
             return "Sorry, I had trouble processing that. Could you try again?"
     
     async def _chat_openai_stream(self, user_message: str, model: str = None) -> AsyncGenerator[str, None]:
-        """Stream chat via OpenAI API."""
+        """Stream chat via OpenAI-compatible API."""
         use_model = model or self.model
-        # Add user message to history
-        self.conversation_history.append({
-            "role": "user",
-            "content": user_message,
-        })
+        is_openclaw = self.backend_type == "openclaw"
         
-        # Build messages
-        messages = [{"role": "system", "content": self.system_prompt}]
-        messages.extend(self.conversation_history[-10:])
+        if is_openclaw:
+            # OpenClaw gateway: voice hint + user message only.
+            # Gateway owns conversation memory — no history duplication.
+            messages = [{"role": "system", "content": VOICE_SYSTEM_HINT}]
+            messages.append({"role": "user", "content": user_message})
+        else:
+            # Direct OpenAI: manage our own history.
+            self.conversation_history.append({
+                "role": "user",
+                "content": user_message,
+            })
+            messages = [{"role": "system", "content": self.system_prompt}]
+            messages.extend(self.conversation_history[-10:])
         
         full_response = ""
         
@@ -165,16 +201,30 @@ class AIBackend:
                     full_response += text
                     yield text
             
-            # Add complete response to history
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": full_response,
-            })
+            # Only track history in direct OpenAI mode
+            if not is_openclaw:
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": full_response,
+                })
             
         except Exception as e:
             logger.error(f"OpenAI streaming error: {e}")
             yield "Sorry, I had trouble processing that."
     
     def clear_history(self):
-        """Clear conversation history."""
-        self.conversation_history = []
+        """Clear conversation history.
+        
+        For OpenClaw gateway mode, this is a no-op since the gateway
+        manages its own conversation memory. Clearing server-side history
+        would have no effect on cross-channel continuity.
+        
+        For direct OpenAI mode, this clears the in-memory history.
+        """
+        if self.backend_type == "openclaw":
+            logger.info("Clear history requested (OpenClaw mode — gateway manages memory, no-op)")
+            # Gateway owns the conversation. We don't clear server-side
+            # because we never accumulate it in OpenClaw mode.
+        else:
+            self.conversation_history = []
+            logger.info("Conversation history cleared (direct OpenAI mode)")

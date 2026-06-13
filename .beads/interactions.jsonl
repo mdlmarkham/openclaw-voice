@@ -1,0 +1,3 @@
+{"id":"int-3c11b477","kind":"field_change","created_at":"2026-06-13T11:58:45.033040446Z","actor":"root","issue_id":"openclaw-voice-cuo","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-ec948b9a","kind":"field_change","created_at":"2026-06-13T11:58:45.664284889Z","actor":"root","issue_id":"openclaw-voice-dom","extra":{"field":"status","new_value":"closed","old_value":"open"}}
+{"id":"int-12ffff93","kind":"field_change","created_at":"2026-06-13T11:58:46.141140385Z","actor":"root","issue_id":"openclaw-voice-d1o","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}

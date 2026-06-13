@@ -32,6 +32,17 @@ from .vad import VoiceActivityDetector
 from .auth import token_manager, load_keys_from_env, APIKey
 from .text_utils import clean_for_speech
 
+# Agent-to-voice mapping: each agent gets a distinct Supertonic voice.
+# F1-F5 = female, M1-M5 = male. Picks match agent personas.
+AGENT_VOICE_MAP = {
+    "metis": "F2",       # Wisdom companion — warm, clear female
+    "atlas": "M2",      # Coordinator — steady, authoritative male
+    "hephaestus": "M4", # Code reviewer — deeper, precise male
+    "clio": "F4",       # Researcher — thoughtful, measured female
+    "deepthought": "M1", # Journalist — professional, clear male
+    "mara": "F5",        # Companion — gentle, warm female
+}
+
 
 class Settings(BaseSettings):
     """Server configuration."""
@@ -171,6 +182,7 @@ async def health():
             "voice": tts._supertonic_voice if tts and tts._backend == "supertonic" else None,
             "sample_rate": tts._supertonic_sr if tts and tts._backend == "supertonic" else (24000 if tts else 0),
             "edge_voice": tts._edge_voice if tts and tts._backend == "edge" else None,
+            "agent_voice_map": AGENT_VOICE_MAP,
         },
         "backend": backend.backend_type if backend else "not_loaded",
         "vad": "loaded" if vad else "not_loaded",
@@ -287,6 +299,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"Agent selected: {session_agent}")
+                    # Switch TTS voice to match agent persona
+                    if session_agent in AGENT_VOICE_MAP and tts._backend == "supertonic":
+                        new_voice = AGENT_VOICE_MAP[session_agent]
+                        if new_voice != tts._supertonic_voice:
+                            try:
+                                tts._supertonic_style = tts._supertonic_tts.get_voice_style(new_voice)
+                                tts._supertonic_voice = new_voice
+                                logger.info(f"Switched TTS voice to {new_voice} for agent {session_agent}")
+                            except Exception as e:
+                                logger.warning(f"Failed to switch voice to {new_voice}: {e}")
                 await websocket.send_json({"type": "listening_started"})
 
             elif msg_type == "stop_listening":

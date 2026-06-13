@@ -1052,7 +1052,14 @@
                 document.getElementById('waveformContainer').classList.add('active');
                 
                 if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'start_listening', agent: agentSelect.value }));
+                    const msg = { type: 'start_listening', agent: agentSelect.value };
+                    // Track reconnection across server restarts
+                    const prevSession = localStorage.getItem('openclaw_session');
+                    if (prevSession && reconnectAttempts > 0) {
+                        msg.reconnect = true;
+                    }
+                    localStorage.setItem('openclaw_session', Date.now().toString());
+                    ws.send(JSON.stringify(msg));
                 }
                 
             } catch (err) {

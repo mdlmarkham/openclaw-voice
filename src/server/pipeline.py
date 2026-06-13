@@ -84,7 +84,8 @@ class VoicePipeline:
             sentence_count = 0
 
             async for chunk in self._backend.chat_stream(
-                transcript, model=agent_model, agent_hint=session.agent_id
+                transcript, model=agent_model, agent_hint=session.agent_id,
+                reconnect=session.reconnect,
             ):
                 full_response += chunk
                 sentence_buffer += chunk

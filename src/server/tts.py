@@ -544,10 +544,19 @@ _CONTROL_TOKEN_RE = re.compile(r"<\|[a-z_]+:[a-z_]+(?::[a-z_]+)?\|>")
 
 def _inject_control_tokens(text: str, agent_hint: Optional[str]) -> str:
     """Prepend Higgs control tokens for the given agent."""
-    tokens = _AGENT_CONTROL_TOKENS.get(agent_hint or "")
-    if tokens:
-        return f"{tokens} {text}"
-    return text
+    if not agent_hint:
+        return text
+    try:
+        from .backend import AGENT_VOICE_CONFIG
+
+        cfg = AGENT_VOICE_CONFIG.get(agent_hint, {})
+        tokens = cfg.get("higgs_tags", "")
+        if tokens:
+            return f"{tokens} {text}"
+    except ImportError:
+        pass
+    tokens = _AGENT_CONTROL_TOKENS.get(agent_hint, "")
+    return f"{tokens} {text}".strip() if tokens else text
 
 
 def _strip_control_tokens(text: str) -> str:

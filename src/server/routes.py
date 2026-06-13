@@ -191,6 +191,7 @@ async def websocket_endpoint(websocket: WebSocket):
     is_playing = False
     pipeline_task: Optional[asyncio.Task] = None
     session_agent: Optional[str] = None
+    session_reconnected = False
     vad_endpoint: Optional[VADEndpoint] = None
     barge_in_vad: Optional[VADEndpoint] = None
 
@@ -256,12 +257,13 @@ async def websocket_endpoint(websocket: WebSocket):
                                     )
                                 except Exception as e:
                                     logger.warning(f"Failed to switch voice to {new_voice}: {e}")
+                session_reconnected = msg.get("reconnect", False)
                 await transport.send_json({"type": "listening_started"})
 
             elif msg_type == "stop_listening":
                 is_listening = False
                 vad_endpoint = None
-                session = SessionContext(agent_id=session_agent)
+                session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
                 pipeline_task = asyncio.create_task(
                     _run_pipeline(audio_buffer, session)
                 )
@@ -282,7 +284,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         audio_buffer.append(audio_np)
                         is_listening = False
                         vad_endpoint = None
-                        session = SessionContext(agent_id=session_agent)
+                        session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
                         pipeline_task = asyncio.create_task(
                             _run_pipeline(audio_buffer, session)
                         )
@@ -298,7 +300,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             logger.debug("VAD endpoint: speech ended, processing buffer")
                             is_listening = False
                             vad_endpoint = None
-                            session = SessionContext(agent_id=session_agent)
+                            session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
                             pipeline_task = asyncio.create_task(
                                 _run_pipeline(audio_buffer, session)
                             )
@@ -424,6 +426,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
     MAX_AUDIO_BUFFER_SAMPLES = settings.sample_rate * MAX_AUDIO_BUFFER_SECONDS
     is_listening = False
     session_agent: Optional[str] = None
+    session_reconnected = False
     rtp_collector_task: Optional[asyncio.Task] = None
     _buffer_overflow = asyncio.Event()
 
@@ -491,7 +494,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                 if rtp_collector_task is not None and not rtp_collector_task.done():
                     rtp_collector_task.cancel()
                     rtp_collector_task = None
-                session = SessionContext(agent_id=session_agent)
+                session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
                 if app_state.pipeline is not None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
                         await transport.send_event(event)
@@ -518,7 +521,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                     if rtp_collector_task is not None and not rtp_collector_task.done():
                         rtp_collector_task.cancel()
                         rtp_collector_task = None
-                    session = SessionContext(agent_id=session_agent)
+                    session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
                     if app_state.pipeline is not None:
                         async for event in app_state.pipeline.process_audio(
                             audio_buffer, session
@@ -532,7 +535,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
 
             if _buffer_overflow.is_set():
                 _buffer_overflow.clear()
-                session = SessionContext(agent_id=session_agent)
+                session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
                 if app_state.pipeline is not None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
                         await transport.send_event(event)

@@ -16,55 +16,89 @@ from typing import Optional, List, Dict, AsyncGenerator
 
 from loguru import logger
 
-# Voice-modality system hint: lightweight instruction that adapts agent behavior
-# for spoken output. When using OpenClaw gateway, the agent's full persona
-# (SOUL.md, workspace, memory) is already loaded — we only add the voice hint.
+# ── Agent voice configuration ────────────────────────────────────
 #
-# Per-agent personality hints shape HOW each agent speaks, not WHAT they say.
-# The gateway provides the full persona; these are voice-specific modulation.
-AGENT_VOICE_HINTS = {
-    "metis": (
-        "You are speaking through a voice interface. "
-        "Keep responses concise and conversational — under 50 words unless more detail is needed. "
-        "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-        "Be curious, warm, and probing. Ask follow-up questions. Connect ideas. "
-        "Your voice should feel like a thinking companion — not a narrator."
-    ),
-    "atlas": (
-        "You are speaking through a voice interface. "
-        "Keep responses concise and authoritative — under 40 words unless coordination requires more. "
-        "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-        "Be direct, steady, and decisive. Give clear status and next steps. "
-        "Your voice should feel like a reliable coordinator — calm under pressure."
-    ),
-    "hephaestus": (
-        "You are speaking through a voice interface. "
-        "Keep responses precise and technical — under 50 words unless detail is needed. "
-        "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-        "Be exact, methodical, and thorough. Point out risks and edge cases. "
-        "Your voice should feel like a senior engineer reviewing your work."
-    ),
-    "clio": (
-        "You are speaking through a voice interface. "
-        "Keep responses concise and well-sourced — under 60 words unless the topic requires depth. "
-        "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-        "Be thoughtful, measured, and evidence-based. Note what's confirmed vs. speculated. "
-        "Your voice should feel like a careful researcher presenting findings."
-    ),
-    "deepthought": (
-        "You are speaking through a voice interface. "
-        "Keep responses concise and narrative — under 50 words unless the story requires more. "
-        "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-        "Be clear, journalistic, and structured. Lead with what happened, then why it matters. "
-        "Your voice should feel like a journalist on the ground reporting what they see."
-    ),
-    "mara": (
-        "You are speaking through a voice interface. "
-        "Keep responses warm and empathetic — under 50 words unless more depth is needed. "
-        "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-        "Be gentle, present, and understanding. Acknowledge feelings before problem-solving. "
-        "Your voice should feel like a trusted friend who truly listens."
-    ),
+# Each agent can have:
+#   hint:        System prompt that shapes HOW the agent speaks
+#   higgs_voice: Preset voice for Higgs TTS (e.g. 'eleanor', 'jake')
+#   higgs_tags:  Control tokens for emotion/prosody/style
+#   ref_audio:   Path to voice cloning reference (Phase 3)
+#   ref_text:    Transcript of ref_audio (improves clone quality)
+#   supertonic_voice: Voice preset for Supertonic fallback
+
+AGENT_VOICE_CONFIG = {
+    "metis": {
+        "hint": (
+            "You are speaking through a voice interface. "
+            "Keep responses concise and conversational — under 50 words unless more detail is needed. "
+            "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
+            "Be curious, warm, and probing. Ask follow-up questions. Connect ideas. "
+            "Your voice should feel like a thinking companion — not a narrator."
+        ),
+        "higgs_voice": "eleanor",
+        "higgs_tags": "<|emotion:contemplation|><|prosody:pause|>",
+        "supertonic_voice": "F2",
+    },
+    "atlas": {
+        "hint": (
+            "You are speaking through a voice interface. "
+            "Keep responses concise and authoritative — under 40 words unless coordination requires more. "
+            "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
+            "Be direct, steady, and decisive. Give clear status and next steps. "
+            "Your voice should feel like a reliable coordinator — calm under pressure."
+        ),
+        "higgs_voice": "jake",
+        "higgs_tags": "<|emotion:determination|>",
+        "supertonic_voice": "M2",
+    },
+    "hephaestus": {
+        "hint": (
+            "You are speaking through a voice interface. "
+            "Keep responses precise and technical — under 50 words unless detail is needed. "
+            "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
+            "Be exact, methodical, and thorough. Point out risks and edge cases. "
+            "Your voice should feel like a senior engineer reviewing your work."
+        ),
+        "higgs_voice": "jake",
+        "higgs_tags": "<|emotion:contentment|><|prosody:speed_slow|>",
+        "supertonic_voice": "M4",
+    },
+    "clio": {
+        "hint": (
+            "You are speaking through a voice interface. "
+            "Keep responses concise and well-sourced — under 60 words unless the topic requires depth. "
+            "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
+            "Be thoughtful, measured, and evidence-based. Note what's confirmed vs. speculated. "
+            "Your voice should feel like a careful researcher presenting findings."
+        ),
+        "higgs_voice": "eleanor",
+        "higgs_tags": "<|emotion:contemplation|><|prosody:speed_slow|>",
+        "supertonic_voice": "F4",
+    },
+    "deepthought": {
+        "hint": (
+            "You are speaking through a voice interface. "
+            "Keep responses concise and narrative — under 50 words unless the story requires more. "
+            "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
+            "Be clear, journalistic, and structured. Lead with what happened, then why it matters. "
+            "Your voice should feel like a journalist on the ground reporting what they see."
+        ),
+        "higgs_voice": "jake",
+        "higgs_tags": "<|emotion:enthusiasm|>",
+        "supertonic_voice": "M1",
+    },
+    "mara": {
+        "hint": (
+            "You are speaking through a voice interface. "
+            "Keep responses warm and empathetic — under 50 words unless more depth is needed. "
+            "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
+            "Be gentle, present, and understanding. Acknowledge feelings before problem-solving. "
+            "Your voice should feel like a trusted friend who truly listens."
+        ),
+        "higgs_voice": "eleanor",
+        "higgs_tags": "<|emotion:affection|><|prosody:pause|>",
+        "supertonic_voice": "F5",
+    },
 }
 
 # Default hint for agents not in the map
@@ -165,6 +199,7 @@ class AIBackend:
         user_message: str,
         model: str = None,
         agent_hint: Optional[str] = None,
+        reconnect: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Stream a response, yielding chunks as they arrive.
@@ -172,7 +207,8 @@ class AIBackend:
         Args:
             user_message: The user's transcribed speech
             model: Override model/agent for this request
-            agent_hint: Per-request agent ID for voice hint selection (not shared state)
+            agent_hint: Per-request agent ID for voice hint selection
+            reconnect: If True, send context resumption message for gateway
 
         Yields:
             Text chunks as they're generated
@@ -180,7 +216,7 @@ class AIBackend:
         use_model = model or self.model
         if (self.backend_type in ("openai", "openclaw")) and self._client:
             async for chunk in self._chat_openai_stream(
-                user_message, model=use_model, agent_hint=agent_hint
+                user_message, model=use_model, agent_hint=agent_hint, reconnect=reconnect
             ):
                 yield chunk
         else:
@@ -190,6 +226,7 @@ class AIBackend:
         self,
         user_message: str,
         agent_hint: Optional[str] = None,
+        reconnect: bool = False,
     ) -> tuple[list[dict], bool]:
         """Build the messages list for an OpenAI API call.
 
@@ -198,8 +235,16 @@ class AIBackend:
         is_openclaw = self.backend_type == "openclaw"
 
         if is_openclaw:
-            voice_hint = AGENT_VOICE_HINTS.get(agent_hint, DEFAULT_VOICE_HINT)
+            cfg = AGENT_VOICE_CONFIG.get(agent_hint, {})
+            voice_hint = cfg.get("hint", DEFAULT_VOICE_HINT)
             messages: list[dict] = [{"role": "system", "content": voice_hint}]
+            if reconnect:
+                messages.append({
+                    "role": "system",
+                    "content": "The user has reconnected after a brief disconnection. "
+                               "Continue the conversation naturally from where you left off. "
+                               "Do not acknowledge the reconnection unless asked."
+                })
             messages.append({"role": "user", "content": user_message})
             return messages, is_openclaw
 
@@ -249,9 +294,10 @@ class AIBackend:
         user_message: str,
         model: str = None,
         agent_hint: Optional[str] = None,
+        reconnect: bool = False,
     ) -> AsyncGenerator[str, None]:
         """Stream chat via OpenAI-compatible API."""
-        messages, _ = await self._build_messages(user_message, agent_hint=agent_hint)
+        messages, _ = await self._build_messages(user_message, agent_hint=agent_hint, reconnect=reconnect)
 
         full_response = ""
 

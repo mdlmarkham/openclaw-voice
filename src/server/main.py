@@ -311,6 +311,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             sentence_buffer = ""
                             agent_model = f"openclaw/{session_agent}" if session_agent else None
 
+                            audio_seq = 0  # Sequence counter for ordered playback
+
                             async for chunk in backend.chat_stream(transcript, model=agent_model):
                                 full_response += chunk
                                 sentence_buffer += chunk
@@ -336,6 +338,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                             speech_text = clean_for_speech(sentence)
                                             if speech_text:
                                                 logger.debug(f"Synthesizing: {speech_text[:50]}...")
+                                                # Mark sentence boundary for gapless scheduling
+                                                await websocket.send_json({
+                                                    "type": "sentence_start",
+                                                    "seq": audio_seq,
+                                                })
                                                 try:
                                                     async for audio_chunk in tts.synthesize_stream(speech_text):
                                                         audio_b64 = base64.b64encode(audio_chunk).decode()
@@ -343,10 +350,15 @@ async def websocket_endpoint(websocket: WebSocket):
                                                             "type": "audio_chunk",
                                                             "data": audio_b64,
                                                             "sample_rate": 24000,
+                                                            "seq": audio_seq,
                                                         })
                                                 except Exception as tts_err:
                                                     logger.error(f"TTS error: {tts_err}")
-                                                    # TTS failed — still send text, just skip audio
+                                                await websocket.send_json({
+                                                    "type": "sentence_end",
+                                                    "seq": audio_seq,
+                                                })
+                                                audio_seq += 1
                                     else:
                                         break
 
@@ -354,6 +366,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             if sentence_buffer.strip():
                                 speech_text = clean_for_speech(sentence_buffer.strip())
                                 if speech_text:
+                                    await websocket.send_json({
+                                        "type": "sentence_start",
+                                        "seq": audio_seq,
+                                    })
                                     try:
                                         async for audio_chunk in tts.synthesize_stream(speech_text):
                                             audio_b64 = base64.b64encode(audio_chunk).decode()
@@ -361,9 +377,14 @@ async def websocket_endpoint(websocket: WebSocket):
                                                 "type": "audio_chunk",
                                                 "data": audio_b64,
                                                 "sample_rate": 24000,
+                                                "seq": audio_seq,
                                             })
                                     except Exception as tts_err:
                                         logger.error(f"TTS error (final): {tts_err}")
+                                    await websocket.send_json({
+                                        "type": "sentence_end",
+                                        "seq": audio_seq,
+                                    })
 
                             await websocket.send_json({
                                 "type": "response_complete",

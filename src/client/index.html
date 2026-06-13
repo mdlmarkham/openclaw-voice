@@ -586,19 +586,32 @@
             if (isRecording) return;
             
             try {
-                // Reuse stream if available, otherwise get new one
-                if (!mediaStream) {
-                    mediaStream = await navigator.mediaDevices.getUserMedia({ 
-                        audio: {
-                            sampleRate: 16000,
-                            channelCount: 1,
-                            echoCancellation: true,
-                            noiseSuppression: true,
-                        }
-                    });
+                // Always get a fresh MediaStream — reusing stale streams causes
+                // "object no longer usable" errors on iOS Safari
+                if (mediaStream) {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                    mediaStream = null;
+                }
+                mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                    }
+                });
+                
+                // Close any stale AudioContext before creating a new one
+                if (audioContext && audioContext.state !== 'closed') {
+                    audioContext.close();
+                }
+                audioContext = new AudioContext({ sampleRate: 16000 });
+                
+                // Resume if suspended (iOS Safari requires user gesture)
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
                 }
                 
-                audioContext = new AudioContext({ sampleRate: 16000 });
                 audioSource = audioContext.createMediaStreamSource(mediaStream);
                 audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
                 
@@ -630,10 +643,21 @@
                 voiceBtn.classList.add('listening');
                 voiceBtn.textContent = continuousMode ? '🎙️ Listening...' : 'Listening...';
                 
-            ws.send(JSON.stringify({ type: 'start_listening', agent: agentSelect.value }));
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'start_listening', agent: agentSelect.value }));
+                }
                 
             } catch (err) {
+                console.error('Microphone error:', err);
                 errorEl.textContent = `Microphone error: ${err.message}`;
+                // Clean up on error
+                if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
+                if (audioSource) { audioSource.disconnect(); audioSource = null; }
+                if (audioContext) { try { audioContext.close(); } catch(e) {} audioContext = null; }
+                if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }
+                isRecording = false;
+                voiceBtn.classList.remove('listening');
+                voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
             }
         }
         

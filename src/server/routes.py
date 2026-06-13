@@ -190,6 +190,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"Agent selected: {session_agent}")
+                    # Set backend agent for per-agent voice personality hints
+                    app_state.backend._current_agent = session_agent
                     if (
                         session_agent in ChatterboxTTS.AGENT_VOICE_MAP
                         and app_state.tts is not None
@@ -335,6 +337,8 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"[webrtc:{session_id}] Agent selected: {session_agent}")
+                    # Set backend agent for per-agent voice personality hints
+                    app_state.backend._current_agent = session_agent
                     if (
                         session_agent in ChatterboxTTS.AGENT_VOICE_MAP
                         and app_state.tts is not None

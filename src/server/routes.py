@@ -30,12 +30,18 @@ from .vad import VADEndpoint
 
 # ── REST API session store ──────────────────────────────────────────
 # Persists conversation history between /api/chat calls for iOS Shortcuts
-_chat_sessions: Dict[str, dict] = {}  # session_id → {backend, last_used}
+_chat_sessions: Dict[str, dict] = {}  # session_id → {backend, agent, last_used}
 _SESSION_TTL = 3600  # Sessions expire after 1 hour of inactivity
+_FRESH_WINDOW = 300  # Reuse sessions used within 5 minutes
 
 
 def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
-    """Get or create a backend session for the REST API."""
+    """Get or create a backend session for the REST API.
+    
+    If no session_id is provided, automatically reuses the most recent
+    session for the same agent if it was used within the fresh window.
+    This gives iOS Shortcuts conversation continuity without managing IDs.
+    """
     import asyncio
     from .backend import AIBackend
     
@@ -45,10 +51,25 @@ def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
     for sid in expired:
         del _chat_sessions[sid]
     
+    # Explicit session_id — use it
     if session_id and session_id in _chat_sessions:
         session = _chat_sessions[session_id]
         session["last_used"] = now
         return session["backend"], session_id
+    
+    # No session_id — find the freshest session for this agent
+    if not session_id:
+        freshest = None
+        freshest_time = 0
+        for sid, s in _chat_sessions.items():
+            if s["agent"] == agent and s["last_used"] > freshest_time:
+                freshest = sid
+                freshest_time = s["last_used"]
+        
+        if freshest and (now - freshest_time) < _FRESH_WINDOW:
+            session = _chat_sessions[freshest]
+            session["last_used"] = now
+            return session["backend"], freshest
     
     # Create new session
     new_id = session_id or f"rest_{secrets.token_hex(8)}"
@@ -79,7 +100,7 @@ def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
             api_key=openai_key,
             system_prompt="",
         )
-    _chat_sessions[new_id] = {"backend": backend, "last_used": now}
+    _chat_sessions[new_id] = {"backend": backend, "agent": agent, "last_used": now}
     return backend, new_id
 
 _tts_lock = asyncio.Lock()
@@ -356,7 +377,7 @@ async def chat(
         
         # Synthesize
         audio_chunks = []
-        async for chunk in tts.synthesize_stream(response_text.strip()):
+        async for chunk in tts.synthesize_stream(tts_text):
             audio_chunks.append(chunk)
         
         if not audio_chunks:
@@ -439,7 +460,7 @@ async def chat_json(
         
         # Synthesize
         audio_chunks = []
-        async for chunk in tts.synthesize_stream(response_text.strip()):
+        async for chunk in tts.synthesize_stream(tts_text):
             audio_chunks.append(chunk)
         
         if not audio_chunks:

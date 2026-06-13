@@ -378,6 +378,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"Agent selected: {session_agent}")
+                    # Set backend agent for per-agent voice personality hints
+                    backend._current_agent = session_agent
                     # Switch TTS voice to match agent persona
                     if session_agent in ChatterboxTTS.AGENT_VOICE_MAP and tts._backend == "supertonic":
                         new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]

@@ -20,6 +20,16 @@ from loguru import logger
 class ChatterboxTTS:
     """Text-to-Speech using multiple backends with intelligent fallback."""
 
+    # Agent-to-voice mapping for dynamic voice switching
+    AGENT_VOICE_MAP = {
+        "metis": "F2",
+        "atlas": "M2",
+        "hephaestus": "M4",
+        "clio": "F4",
+        "deepthought": "M1",
+        "mara": "F5",
+    }
+
     def __init__(
         self,
         voice_sample: Optional[str] = None,
@@ -52,17 +62,7 @@ class ChatterboxTTS:
                 logger.info("✅ ElevenLabs TTS ready")
                 return
             except ImportError:
-                logger.warning("ElevenLabs SDK not installed, trying pip install...")
-                try:
-                    import subprocess
-                    subprocess.check_call(["pip", "install", "elevenlabs", "-q"])
-                    from elevenlabs import ElevenLabs
-                    self._elevenlabs_client = ElevenLabs(api_key=elevenlabs_key)
-                    self._backend = "elevenlabs"
-                    logger.info("✅ ElevenLabs TTS ready (auto-installed)")
-                    return
-                except Exception as e:
-                    logger.warning(f"ElevenLabs auto-install failed: {e}")
+                logger.warning("ElevenLabs SDK not installed — add 'elevenlabs' to requirements.txt")
             except Exception as e:
                 logger.warning(f"ElevenLabs failed: {e}")
 
@@ -149,6 +149,23 @@ class ChatterboxTTS:
             return 24000
         else:
             return 24000  # Edge TTS and others output at 24kHz
+
+    def status(self) -> dict:
+        """Return TTS status dict for health checks. Avoids reaching into private attrs."""
+        result = {"backend": self._backend}
+        if self._backend == "supertonic":
+            result.update({
+                "model": self._supertonic_model,
+                "voice": self._supertonic_voice,
+                "sample_rate": self._supertonic_sr,
+                "agent_voice_map": self.AGENT_VOICE_MAP,
+            })
+        elif self._backend == "edge":
+            result["edge_voice"] = self._edge_voice
+        elif self._backend == "elevenlabs":
+            result["voice_id"] = self.voice_id
+            result["sample_rate"] = 24000
+        return result
 
     async def synthesize(self, text: str) -> np.ndarray:
         """Synthesize speech from text. Returns float32 numpy array at native sample rate."""

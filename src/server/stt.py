@@ -87,7 +87,15 @@ class WhisperSTT:
         """Transcribe audio to text."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._transcribe_sync, audio)
-    
+
+    def status(self) -> dict:
+        """Return STT status dict for health checks."""
+        return {
+            "backend": self._backend,
+            "model": self.model_name,
+            "device": self.device,
+        }
+
     def _transcribe_sync(self, audio: np.ndarray) -> str:
         """Synchronous transcription."""
         if self._backend == "faster-whisper":

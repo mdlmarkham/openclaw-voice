@@ -171,6 +171,33 @@ class ChatterboxTTS:
         Yields:
             Raw PCM audio chunks (int16 at native sample rate)
         """
+        try:
+            async for chunk in self._synthesize_stream_primary(text):
+                yield chunk
+        except Exception as e:
+            logger.error(f"Primary TTS ({self._backend}) failed: {e}")
+            # Try fallback
+            fallback = self._get_fallback_backend()
+            if fallback:
+                logger.info(f"Trying fallback TTS: {fallback._backend}")
+                try:
+                    async for chunk in fallback.synthesize_stream(text):
+                        yield chunk
+                except Exception as e2:
+                    logger.error(f"Fallback TTS ({fallback._backend}) also failed: {e2}")
+            else:
+                logger.warning("No fallback TTS available")
+
+    def _get_fallback_backend(self) -> Optional['ChatterboxTTS']:
+        """Get a fallback TTS backend if the primary fails."""
+        if self._backend == 'supertonic':
+            # Try Edge TTS as fallback — just delegate to our own _synthesize_edge
+            # by creating a lightweight wrapper that uses the same instance
+            return _EdgeFallback(self._edge_voice)
+        return None
+
+    async def _synthesize_stream_primary(self, text: str) -> AsyncGenerator[bytes, None]:
+        """Primary TTS streaming (before fallback)."""
         if self._backend == "elevenlabs":
             try:
                 audio_generator = self._elevenlabs_client.text_to_speech.convert(
@@ -294,3 +321,33 @@ class ChatterboxTTS:
         else:
             logger.debug(f"Mock TTS: '{text[:50]}...'")
             return np.zeros(12000, dtype=np.float32)
+
+
+class _EdgeFallback:
+    """Lightweight Edge TTS fallback — used when Supertonic fails."""
+
+    def __init__(self, voice: str = "en-US-JennyNeural"):
+        self._backend = "edge"
+        self._edge_voice = voice
+        self.sample_rate = 24000
+
+    async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
+        """Edge TTS streaming fallback."""
+        try:
+            import edge_tts
+            communicate = edge_tts.Communicate(text, self._edge_voice)
+            audio_buffer = io.BytesIO()
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_buffer.write(chunk["data"])
+            audio_buffer.seek(0)
+
+            import soundfile as sf
+            data, sr = sf.read(audio_buffer)
+            if sr != 24000:
+                import soxr
+                data = soxr.resample(data, sr, 24000)
+            audio_int16 = (data * 32768.0).clip(-32768, 32767).astype(np.int16)
+            yield audio_int16.tobytes()
+        except Exception as e:
+            logger.error(f"Edge TTS fallback error: {e}")

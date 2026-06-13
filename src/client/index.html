@@ -79,13 +79,13 @@
         }
         
         .voice-button {
-            width: 150px;
-            height: 150px;
+            width: 140px;
+            height: 140px;
             border-radius: 50%;
             border: none;
             background: linear-gradient(135deg, #c9a227 0%, #a6841a 100%);
             color: white;
-            font-size: 1.2rem;
+            font-size: 1.1rem;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
@@ -93,7 +93,9 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            margin: 0 auto 30px;
+            flex-direction: column;
+            margin: 0 auto 10px;
+            position: relative;
         }
         
         .voice-button:hover {
@@ -120,6 +122,23 @@
         @keyframes pulse {
             0%, 100% { box-shadow: 0 10px 40px rgba(201, 162, 39, 0.3); }
             50% { box-shadow: 0 10px 60px rgba(201, 162, 39, 0.6); }
+        }
+        
+        /* Waveform visualizer */
+        .waveform-container {
+            width: 200px;
+            height: 40px;
+            margin: 0 auto 20px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        .waveform-container.active {
+            opacity: 1;
+        }
+        .waveform-canvas {
+            width: 100%;
+            height: 100%;
+            border-radius: 8px;
         }
         
         .continuous-toggle {
@@ -343,6 +362,36 @@
         }
         .config-panel .config-ok { color: #4caf50; }
         .config-panel .config-warn { color: #ff9800; }
+        
+        /* Mobile responsive */
+        @media (max-width: 480px) {
+            .container {
+                padding: 10px;
+            }
+            h1 {
+                font-size: 1.8rem;
+            }
+            .voice-button {
+                width: 120px;
+                height: 120px;
+                font-size: 1rem;
+            }
+            .waveform-container {
+                width: 160px;
+                height: 32px;
+            }
+            .transcript-box {
+                max-height: 280px;
+                font-size: 0.9rem;
+            }
+            .config-panel {
+                font-size: 0.65rem;
+                gap: 10px;
+            }
+            .instructions {
+                display: none;
+            }
+        }
     </style>
 </head>
 <body>
@@ -363,8 +412,13 @@
         </div>
         
         <button class="voice-button" id="voiceBtn">
-            Hold to Talk
+            <span id="voiceBtnIcon">🎤</span>
+            <span id="voiceBtnText">Hold to Talk</span>
         </button>
+        
+        <div class="waveform-container" id="waveformContainer">
+            <canvas class="waveform-canvas" id="waveformCanvas"></canvas>
+        </div>
         
         <div class="continuous-toggle">
             <label class="toggle-switch">
@@ -406,12 +460,16 @@
 
     <script>
         const voiceBtn = document.getElementById('voiceBtn');
+        const voiceBtnIcon = document.getElementById('voiceBtnIcon');
+        const voiceBtnText = document.getElementById('voiceBtnText');
         const statusEl = document.getElementById('status');
         const transcriptEl = document.getElementById('transcript');
         const errorEl = document.getElementById('error');
         const clearBtn = document.getElementById('clearBtn');
         const continuousModeToggle = document.getElementById('continuousMode');
         const connDot = document.getElementById('connDot');
+        const waveformCanvas = document.getElementById('waveformCanvas');
+        const waveformCtx = waveformCanvas.getContext('2d');
         
         let ws = null;
         let mediaRecorder = null;
@@ -628,7 +686,15 @@
                     setStatus('Error — try again', false, true);
                     errorEl.textContent = msg.message || 'Unknown error';
                     break;
+                case 'history_cleared':
+                    // Server confirmed history clear
+                    setStatus('History cleared');
+                    setTimeout(() => setStatus('Ready'), 1500);
+                    break;
                 case 'pong':
+                    break;
+                case 'vad_status':
+                    // Could use for visual feedback
                     break;
             }
         }
@@ -736,18 +802,6 @@
         }
 
         function onAudioComplete() {
-            // Legacy — now handled by scheduleAudioCompletion
-            if (continuousMode) {
-                setStatus('🎙️ Ready to listen...', true);
-                setTimeout(() => {
-                    if (continuousMode) startRecording();
-                }, 300);
-            } else {
-                setStatus('Ready');
-            }
-        }
-        
-        function onAudioComplete() {
             if (continuousMode) {
                 setStatus('🎙️ Ready to listen...', true);
                 setTimeout(() => {
@@ -828,11 +882,15 @@
                         const audioData = e.inputBuffer.getChannelData(0);
                         const base64 = float32ToBase64(audioData);
                         ws.send(JSON.stringify({ type: 'audio', data: base64 }));
+
+                        // Feed waveform visualizer
+                        const rmsVal = Math.sqrt(audioData.reduce((s, v) => s + v * v, 0) / audioData.length);
+                        micLevel = micLevel * 0.6 + rmsVal * 10 * 0.4;  // Smoothed, scaled
+                        micLevel = Math.min(1, micLevel);  // Clamp
                         
                         if (continuousMode) {
                             // RMS-based silence detection — less aggressive than raw energy
-                            const rms = Math.sqrt(audioData.reduce((sum, val) => sum + val * val, 0) / audioData.length);
-                            if (rms > 0.015) {
+                            if (rmsVal > 0.015) {
                                 lastSoundTime = Date.now();
                             } else if (Date.now() - lastSoundTime > silenceThreshold) {
                                 stopRecording();
@@ -846,7 +904,9 @@
                 
                 isRecording = true;
                 voiceBtn.classList.add('listening');
-                voiceBtn.textContent = continuousMode ? '🎙️ Listening...' : 'Listening...';
+                document.getElementById('voiceBtnIcon').textContent = '🎙️';
+                voiceBtnText.textContent = continuousMode ? 'Listening...' : 'Listening...';
+                document.getElementById('waveformContainer').classList.add('active');
                 
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({ type: 'start_listening', agent: agentSelect.value }));
@@ -867,7 +927,10 @@
             
             isRecording = false;
             voiceBtn.classList.remove('listening');
-            voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
+            document.getElementById('voiceBtnIcon').textContent = '🎤';
+            voiceBtnText.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
+            document.getElementById('waveformContainer').classList.remove('active');
+            micLevel = 0;  // Reset waveform
             
             cleanupAudioProcessor();
             
@@ -905,6 +968,79 @@
             }
             return btoa(binary);
         }
+        
+        // ── Waveform visualizer ──────────────────────────────────
+        let waveformAnimId = null;
+        let micLevel = 0;  // 0-1, updated during recording
+
+        // Polyfill roundRect for Firefox
+        if (!CanvasRenderingContext2D.prototype.roundRect) {
+            CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+                this.moveTo(x + r, y);
+                this.lineTo(x + w - r, y);
+                this.arcTo(x + w, y, x + w, y + r, r);
+                this.lineTo(x + w, y + h - r);
+                this.arcTo(x + w, y + h, x + w - r, y + h, r);
+                this.lineTo(x + r, y + h);
+                this.arcTo(x, y + h, x, y + h - r, r);
+                this.lineTo(x, y + r);
+                this.arcTo(x, y, x + r, y, r);
+                this.closePath();
+                return this;
+            };
+        }
+
+        function resizeCanvas() {
+            const rect = waveformCanvas.getBoundingClientRect();
+            waveformCanvas.width = rect.width * window.devicePixelRatio;
+            waveformCanvas.height = rect.height * window.devicePixelRatio;
+            waveformCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        function drawWaveform() {
+            const w = waveformCanvas.width / window.devicePixelRatio;
+            const h = waveformCanvas.height / window.devicePixelRatio;
+            waveformCtx.clearRect(0, 0, w, h);
+
+            if (!isRecording) {
+                // Idle: subtle breathing line
+                waveformCtx.beginPath();
+                waveformCtx.strokeStyle = 'rgba(201, 162, 39, 0.3)';
+                waveformCtx.lineWidth = 1.5;
+                const t = Date.now() / 1000;
+                for (let x = 0; x < w; x++) {
+                    const y = h / 2 + Math.sin(x * 0.05 + t * 2) * 2;
+                    x === 0 ? waveformCtx.moveTo(x, y) : waveformCtx.lineTo(x, y);
+                }
+                waveformCtx.stroke();
+            } else {
+                // Recording: show amplitude bars
+                const barCount = 32;
+                const barGap = 2;
+                const barWidth = (w - barGap * (barCount - 1)) / barCount;
+                const maxBarH = h * 0.8;
+
+                for (let i = 0; i < barCount; i++) {
+                    // Create organic-looking amplitude from micLevel
+                    const jitter = Math.sin(i * 0.7 + Date.now() * 0.008) * 0.3 + 0.7;
+                    const barH = Math.max(2, micLevel * maxBarH * jitter);
+                    const x = i * (barWidth + barGap);
+                    const y = (h - barH) / 2;
+
+                    // Gradient from gold to white based on amplitude
+                    const alpha = 0.4 + micLevel * 0.6;
+                    waveformCtx.fillStyle = `rgba(201, 162, 39, ${alpha})`;
+                    waveformCtx.beginPath();
+                    waveformCtx.roundRect(x, y, barWidth, barH, 2);
+                    waveformCtx.fill();
+                }
+            }
+
+            waveformAnimId = requestAnimationFrame(drawWaveform);
+        }
+        drawWaveform();  // Start animation loop
         
         // ── Button event binding ─────────────────────────────────
         function bindButtonEvents() {
@@ -956,13 +1092,18 @@
             }
         });
         
+        // ── Clear history: also clear server-side conversation ──
         clearBtn.addEventListener('click', () => {
             transcriptEl.innerHTML = '';
+            // Clear server-side conversation history
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'clear_history' }));
+            }
         });
         
         continuousModeToggle.addEventListener('change', (e) => {
             continuousMode = e.target.checked;
-            voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
+            voiceBtnText.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
             
             if (continuousMode) {
                 setStatus('🎙️ Continuous mode ON — tap to start', true);

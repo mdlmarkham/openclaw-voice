@@ -420,6 +420,12 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
 
+            elif msg_type == "clear_history":
+                # Clear server-side conversation history
+                backend.clear_history()
+                logger.info(f"History cleared for {client_id}")
+                await websocket.send_json({"type": "history_cleared"})
+
     except WebSocketDisconnect as e:
         logger.info(f"Client {client_id} disconnected (code={e.code})")
     except Exception as e:

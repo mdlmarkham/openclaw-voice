@@ -17,12 +17,14 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from contextlib import asynccontextmanager
+
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .stt import WhisperSTT
 from .tts import ChatterboxTTS
@@ -68,25 +70,10 @@ class Settings(BaseSettings):
     # For OpenClaw gateway mode, VOICE_SYSTEM_HINT from backend.py is used instead.
     system_prompt: str = "unused_in_openclaw_mode"
 
-    class Config:
-        env_prefix = "OPENCLAW_"
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(env_prefix="OPENCLAW_", env_file=".env", extra="ignore")
 
 
 settings = Settings()
-app = FastAPI(title="OpenClaw Voice", version="0.3.0")
-
-# CORS for cross-origin WebSocket
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Global instances
 stt: Optional[WhisperSTT] = None
@@ -96,9 +83,9 @@ vad: Optional[VoiceActivityDetector] = None
 _startup_time: float = 0.0
 
 
-@app.on_event("startup")
-async def startup():
-    """Initialize models on server start."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and tear down models on server start/stop."""
     global stt, tts, backend, vad, _startup_time
 
     _startup_time = time.time()
@@ -166,6 +153,21 @@ async def startup():
     vad = VoiceActivityDetector()
 
     logger.info("✅ OpenClaw Voice server ready!")
+    yield
+
+
+app = FastAPI(title="OpenClaw Voice", version="0.3.0", lifespan=lifespan)
+
+# CORS for cross-origin WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Sentence separators for streaming TTS

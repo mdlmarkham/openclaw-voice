@@ -7,10 +7,14 @@ Token system like Telegram Bot API:
 - Hosted version charges per minute or monthly
 """
 
+import json
+import os
 import secrets
 import hashlib
+import sqlite3
+from pathlib import Path
 from typing import Optional, Dict, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from loguru import logger
 
@@ -47,17 +51,99 @@ class APIKey:
     tier: str = "free"  # free, pro, enterprise
 
 
+DB_DIR = Path(__file__).resolve().parent.parent / "data"
+
+
 class TokenManager:
     """
     Manage API tokens for voice connections.
 
-    In production, this would be backed by a database.
-    For MVP, we use in-memory storage + env vars.
+    Uses in-memory dicts for speed, backed by SQLite for persistence.
     """
 
-    def __init__(self):
+    def __init__(self, db_path: Optional[str] = None):
         self._keys: Dict[str, APIKey] = {}
-        self._key_to_id: Dict[str, str] = {}  # hash -> key_id lookup
+        self._key_to_id: Dict[str, str] = {}
+        self._db_path = db_path or os.getenv("OPENCLAW_AUTH_DB") or str(DB_DIR / "auth.db")
+
+    def _ensure_db(self):
+        """Create the directory and database table if missing."""
+        os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
+        conn = sqlite3.connect(self._db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                key_id TEXT PRIMARY KEY,
+                key_hash TEXT NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                rate_limit_per_minute INTEGER NOT NULL DEFAULT 60,
+                monthly_minutes INTEGER,
+                minutes_used REAL NOT NULL DEFAULT 0.0,
+                active INTEGER NOT NULL DEFAULT 1,
+                tier TEXT NOT NULL DEFAULT 'free',
+                features TEXT NOT NULL DEFAULT '{}',
+                _window_start TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def save(self):
+        """Persist all keys to SQLite."""
+        self._ensure_db()
+        conn = sqlite3.connect(self._db_path)
+        for key_id, key in self._keys.items():
+            conn.execute("""
+                INSERT OR REPLACE INTO api_keys
+                (key_id, key_hash, name, created_at, rate_limit_per_minute,
+                 monthly_minutes, minutes_used, active, tier, features, _window_start)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                key.key_id,
+                key.key_hash,
+                key.name,
+                key.created_at.isoformat(),
+                key.rate_limit_per_minute,
+                key.monthly_minutes,
+                key.minutes_used,
+                1 if key.active else 0,
+                key.tier,
+                json.dumps(key.features),
+                key._window_start.isoformat() if getattr(key, '_window_start', None) else None,
+            ))
+        conn.commit()
+        conn.close()
+
+    def load(self):
+        """Load keys from SQLite into memory."""
+        self._ensure_db()
+        conn = sqlite3.connect(self._db_path)
+        cursor = conn.execute("SELECT * FROM api_keys")
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+
+        for row in rows:
+            data = dict(zip(columns, row))
+            key = APIKey(
+                key_id=data["key_id"],
+                key_hash=data["key_hash"],
+                name=data["name"],
+                created_at=datetime.fromisoformat(data["created_at"]),
+                rate_limit_per_minute=data["rate_limit_per_minute"],
+                monthly_minutes=data["monthly_minutes"],
+                minutes_used=data["minutes_used"],
+                active=bool(data["active"]),
+                tier=data["tier"],
+                features=json.loads(data["features"]),
+            )
+            if data.get("_window_start"):
+                key._window_start = datetime.fromisoformat(data["_window_start"])
+            self._keys[key.key_id] = key
+            self._key_to_id[key.key_hash] = key.key_id
+
+        if rows:
+            logger.info(f"Loaded {len(rows)} API keys from {self._db_path}")
 
     def generate_key(
         self,
@@ -91,6 +177,7 @@ class TokenManager:
 
         self._keys[key_id] = api_key
         self._key_to_id[key_hash] = key_id
+        self.save()
 
         logger.info(f"Generated API key: {key_id} ({name}, tier={tier})")
 
@@ -151,6 +238,7 @@ class TokenManager:
     def record_usage(self, api_key: APIKey, minutes: float):
         """Record minutes used for billing."""
         api_key.minutes_used += minutes
+        self.save()
         logger.debug(
             f"Key {api_key.key_id}: used {minutes:.2f} min, total {api_key.minutes_used:.2f}"
         )
@@ -171,6 +259,7 @@ class TokenManager:
         """Revoke an API key."""
         if key_id in self._keys:
             self._keys[key_id].active = False
+            self.save()
             logger.info(f"Revoked API key: {key_id}")
             return True
         return False
@@ -184,16 +273,16 @@ class TokenManager:
 token_manager = TokenManager()
 
 
-# Helper to load keys from environment
+# Helper to load keys from environment and persisted database
 def load_keys_from_env():
     """
-    Load API keys from environment variables.
+    Load API keys from SQLite database, then overlay env var keys.
 
     Format: OPENCLAW_API_KEY_<name>=<plaintext_key>
-
-    For production, use a database instead.
     """
-    import os
+
+    # Restore keys from database first
+    token_manager.load()
 
     # Check for master key (allows all access)
     master_key = os.getenv("OPENCLAW_MASTER_KEY")
@@ -216,6 +305,7 @@ def load_keys_from_env():
         }
         token_manager._keys["master"] = api_key
         token_manager._key_to_id[key_hash] = "master"
+        token_manager.save()
         logger.info("Loaded master API key from environment")
 
 

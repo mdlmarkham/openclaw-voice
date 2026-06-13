@@ -23,6 +23,7 @@ class VoiceActivityDetector:
                 repo_or_dir='snakers4/silero-vad',
                 model='silero_vad',
                 force_reload=False,
+                trust_repo=True,
             )
             self.model = model
             self._get_speech_timestamps = utils[0]

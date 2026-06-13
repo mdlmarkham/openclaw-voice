@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     class Config:
         env_prefix = "OPENCLAW_"
         env_file = ".env"
+        extra = "ignore"  # Allow env vars not in model (e.g. EDGE_TTS_VOICE)
 
 
 settings = Settings()

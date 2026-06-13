@@ -23,6 +23,7 @@ class ChatterboxTTS:
         self.voice_sample = voice_sample
         self.device = device
         self.voice_id = voice_id or "cgSgspJ2msm6clMCkdW9"  # Jessica
+        self._edge_voice = os.environ.get("EDGE_TTS_VOICE", "en-US-JennyNeural")
         self.model = None
         self._backend = "mock"
         self._elevenlabs_client = None
@@ -53,6 +54,17 @@ class ChatterboxTTS:
                     logger.warning(f"ElevenLabs auto-install failed: {e}")
             except Exception as e:
                 logger.warning(f"ElevenLabs failed: {e}")
+        
+        # Try Edge TTS (Microsoft, free, no API key, fast)
+        try:
+            import edge_tts
+            self._backend = "edge"
+            logger.info("✅ Edge TTS ready (Microsoft, free, no API key)")
+            return
+        except ImportError:
+            logger.warning("edge-tts not installed")
+        except Exception as e:
+            logger.warning(f"Edge TTS check failed: {e}")
         
         # Try Chatterbox (self-hosted)
         try:
@@ -129,7 +141,43 @@ class ChatterboxTTS:
     
     def _synthesize_sync(self, text: str) -> np.ndarray:
         """Synchronous synthesis."""
-        if self._backend == "elevenlabs":
+        if self._backend == "edge":
+            # Edge TTS uses asyncio, so we run it synchronously
+            try:
+                import edge_tts
+                import io
+                import struct
+                
+                async def _edge_synthesize():
+                    # Use a natural-sounding voice
+                    voice = self._edge_voice or "en-US-JennyNeural"
+                    communicate = edge_tts.Communicate(text, voice)
+                    audio_buffer = io.BytesIO()
+                    # Edge TTS writes MP3; we need to convert to PCM
+                    await communicate.save_to_buffer(audio_buffer)
+                    audio_buffer.seek(0)
+                    
+                    # Decode MP3 to PCM using soundfile
+                    import soundfile as sf
+                    data, sr = sf.read(audio_buffer)
+                    # Resample to 24kHz if needed
+                    if sr != 24000:
+                        import librosa
+                        data = librosa.resample(data, orig_sr=sr, target_sr=24000)
+                    return data.astype(np.float32)
+                
+                # Run async function synchronously
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're inside an async context, use nest_asyncio
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                return asyncio.run(_edge_synthesize())
+            except Exception as e:
+                logger.error(f"Edge TTS error: {e}")
+                return np.zeros(16000, dtype=np.float32)  # 1 sec silence on error
+        
+        elif self._backend == "elevenlabs":
             try:
                 # Generate audio with ElevenLabs (turbo model for speed)
                 audio_generator = self._elevenlabs_client.text_to_speech.convert(

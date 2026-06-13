@@ -1,0 +1,29 @@
+# OpenClaw Voice — Caddy reverse proxy with auto-TLS
+#
+# Usage:
+#   export DOMAIN=voice.example.com
+#   caddy run --config deploy/caddy/Caddyfile
+#
+# Caddy automatically provisions Let's Encrypt certificates.
+# Make sure your domain's DNS points to this machine.
+
+{$DOMAIN:localhost} {
+    reverse_proxy localhost:{$OPENCLAW_PORT:8765} {
+        # WebSocket support
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # WebSocket upgrade
+    @websocket {
+        header Connection *Upgrade*
+        header Upgrade    websocket
+    }
+    reverse_proxy @websocket localhost:{$OPENCLAW_PORT:8765}
+
+    log {
+        output file /var/log/caddy/openclaw-voice.log
+    }
+}

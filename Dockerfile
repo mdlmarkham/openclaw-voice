@@ -56,7 +56,7 @@ EXPOSE 8765
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8765/ || exit 1
+    CMD curl -f http://localhost:8765/health || exit 1
 
 # Run server
 CMD [".venv/bin/python", "-m", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8765"]

@@ -32,17 +32,6 @@ from .vad import VoiceActivityDetector
 from .auth import token_manager, load_keys_from_env, APIKey
 from .text_utils import clean_for_speech
 
-# Agent-to-voice mapping: each agent gets a distinct Supertonic voice.
-# F1-F5 = female, M1-M5 = male. Picks match agent personas.
-AGENT_VOICE_MAP = {
-    "metis": "F2",       # Wisdom companion — warm, clear female
-    "atlas": "M2",      # Coordinator — steady, authoritative male
-    "hephaestus": "M4", # Code reviewer — deeper, precise male
-    "clio": "F4",       # Researcher — thoughtful, measured female
-    "deepthought": "M1", # Journalist — professional, clear male
-    "mara": "F5",        # Companion — gentle, warm female
-}
-
 
 class Settings(BaseSettings):
     """Server configuration."""
@@ -76,13 +65,9 @@ class Settings(BaseSettings):
     # Audio
     sample_rate: int = 16000
 
-    # System prompt for voice mode — keep it short and conversational
-    system_prompt: str = (
-        "You are Métis, a wisdom companion speaking through a voice interface. "
-        "Keep responses concise and conversational — under 50 words unless more detail is needed. "
-        "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-        "Be warm, direct, and associative. Connect ideas. Ask probing questions."
-    )
+    # System prompt for voice mode — used only in direct OpenAI mode.
+    # For OpenClaw gateway mode, VOICE_SYSTEM_HINT from backend.py is used instead.
+    system_prompt: str = "unused_in_openclaw_mode"
 
     class Config:
         env_prefix = "OPENCLAW_"
@@ -145,6 +130,8 @@ async def startup():
             system_prompt=settings.system_prompt,
         )
     else:
+        logger.warning("⚠️ Using direct OpenAI backend — conversation history is global (shared across all clients). "
+                       "For multi-user deployments, use OpenClaw gateway which manages per-session memory.")
         logger.info(f"Connecting to backend: {settings.backend_type}")
         backend = AIBackend(
             backend_type=settings.backend_type,
@@ -208,16 +195,8 @@ async def health():
     return JSONResponse({
         "status": "ok",
         "uptime_seconds": round(time.time() - _startup_time, 1) if _startup_time else 0,
-        "stt": stt._backend if stt else "not_loaded",
-        "tts": tts._backend if tts else "not_loaded",
-        "tts_detail": {
-            "backend": tts._backend if tts else "not_loaded",
-            "model": tts._supertonic_model if tts and tts._backend == "supertonic" else None,
-            "voice": tts._supertonic_voice if tts and tts._backend == "supertonic" else None,
-            "sample_rate": tts._supertonic_sr if tts and tts._backend == "supertonic" else (24000 if tts else 0),
-            "edge_voice": tts._edge_voice if tts and tts._backend == "edge" else None,
-            "agent_voice_map": AGENT_VOICE_MAP,
-        },
+        "stt": stt.status() if stt else {"backend": "not_loaded"},
+        "tts": tts.status() if tts else {"backend": "not_loaded"},
         "backend": backend.backend_type if backend else "not_loaded",
         "vad": "loaded" if vad else "not_loaded",
         "config": {
@@ -336,8 +315,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     session_agent = msg["agent"]
                     logger.info(f"Agent selected: {session_agent}")
                     # Switch TTS voice to match agent persona
-                    if session_agent in AGENT_VOICE_MAP and tts._backend == "supertonic":
-                        new_voice = AGENT_VOICE_MAP[session_agent]
+                    if session_agent in ChatterboxTTS.AGENT_VOICE_MAP and tts._backend == "supertonic":
+                        new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]
                         if new_voice != tts._supertonic_voice:
                             try:
                                 tts._supertonic_style = tts._supertonic_tts.get_voice_style(new_voice)

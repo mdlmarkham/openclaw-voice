@@ -492,6 +492,16 @@
             const urlParams = new URLSearchParams(window.location.search);
             return urlParams.get('api_key') || localStorage.getItem('openclaw_api_key') || '';
         }
+
+        // Get server host from URL param, localStorage, or fall back to current page host
+        function getServerHost() {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get('server') || localStorage.getItem('openclaw_server') || window.location.host;
+        }
+
+        function setServerHost(host) {
+            localStorage.setItem('openclaw_server', host);
+        }
         
         const agentSelect = document.getElementById('agentSelect');
         
@@ -508,8 +518,9 @@
         // ── Health check ────────────────────────────────────────
         async function checkHealth() {
             try {
-                const proto = window.location.protocol === 'https:' ? 'https:' : 'http:';
-                const url = `${proto}//${window.location.host}/health`;
+                const host = getServerHost();
+                const proto = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('[') ? 'http:' : window.location.protocol;
+                const url = `${proto}//${host}/health`;
                 const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
                 if (resp.ok) {
                     const data = await resp.json();
@@ -525,13 +536,14 @@
         
         // ── WebSocket connection with auto-reconnect ────────────
         function connect() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = getServerHost();
+            const protocol = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('[') ? 'ws:' : (window.location.protocol === 'https:' ? 'wss:' : 'ws:');
             const apiKey = getApiKey();
             const basePath = window.location.pathname.replace(/\/$/, '');
             const wsPath = basePath ? `${basePath}/ws` : '/ws';
             const wsUrl = apiKey
-                ? `${protocol}//${window.location.host}${wsPath}?api_key=${encodeURIComponent(apiKey)}`
-                : `${protocol}//${window.location.host}${wsPath}`;
+                ? `${protocol}//${host}${wsPath}?api_key=${encodeURIComponent(apiKey)}`
+                : `${protocol}//${host}${wsPath}`;
             
             try {
                 ws = new WebSocket(wsUrl);
@@ -544,7 +556,7 @@
             
             ws.onopen = () => {
                 console.log('WebSocket connected to:', wsUrl);
-                document.getElementById('debug').textContent = 'WS: connected to ' + window.location.host;
+                document.getElementById('debug').textContent = 'WS: ' + host;
                 setStatus('Connected');
                 updateConnStatus('ok');
                 errorEl.textContent = '';
@@ -1157,8 +1169,9 @@
         // ── Health check & config display ─────────────────────
         async function fetchConfig() {
             try {
-                const proto = window.location.protocol === 'https:' ? 'https:' : 'http:';
-                const resp = await fetch(`${proto}//${window.location.host}/health`, { signal: AbortSignal.timeout(3000) });
+                const host = getServerHost();
+                const proto = host.includes('localhost') || host.includes('127.0.0.1') || host.startsWith('[') ? 'http:' : window.location.protocol;
+                const resp = await fetch(`${proto}//${host}/health`, { signal: AbortSignal.timeout(3000) });
                 if (resp.ok) {
                     const data = await resp.json();
                     const cfg = data.tts_detail || {};

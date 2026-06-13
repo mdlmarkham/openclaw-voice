@@ -53,6 +53,15 @@ async def index():
     return response
 
 
+@router.get("/shortcut")
+@router.get("/voice/shortcut")
+async def shortcut_setup():
+    """Serve the iOS Shortcut setup page."""
+    response = FileResponse(Path(__file__).resolve().parent.parent / "client" / "shortcut-setup.html")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
 @router.get("/favicon.svg")
 @router.get("/favicon.ico")
 async def favicon():

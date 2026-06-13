@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask Métis — iOS Shortcut</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; background: #0a0a0a; color: #e0e0e0; }
+  h1 { color: #a78bfa; }
+  .step { background: #1a1a2e; border-radius: 12px; padding: 1rem; margin: 0.8rem 0; border-left: 3px solid #7c3aed; }
+  .step-num { color: #a78bfa; font-weight: bold; }
+  code { background: #2a2a4a; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  .url-box { background: #2a2a4a; padding: 0.8rem; border-radius: 8px; word-break: break-all; font-family: monospace; font-size: 0.85em; color: #c4b5fd; }
+  .agent-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin: 0.5rem 0; }
+  .agent { background: #2a2a4a; padding: 0.5rem; border-radius: 8px; text-align: center; font-size: 0.85em; }
+  .tip { background: #1e1e3a; border-left: 3px solid #f59e0b; padding: 0.8rem; border-radius: 0 8px 8px 0; margin: 1rem 0; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<h1>🧠 Ask Métis</h1>
+<p>Hands-free voice chat with your AI agents via Siri.</p>
+
+<h2>Setup (30 seconds)</h2>
+
+<div class="step">
+  <span class="step-num">1.</span> Open the <strong>Shortcuts</strong> app → tap <strong>+</strong>
+</div>
+
+<div class="step">
+  <span class="step-num">2.</span> Add action: <strong>Dictate Text</strong><br>
+  <small>Language: English (US) · Stop listening: After Pause</small>
+</div>
+
+<div class="step">
+  <span class="step-num">3.</span> Add action: <strong>Get Contents of URL</strong><br>
+  <small>URL:</small>
+  <div class="url-box">https://openclaw.tailf9480.ts.net/voice/api/chat</div>
+  <small>Method: <code>POST</code> · Body: <code>JSON</code></small><br>
+  <small>Header: <code>Content-Type: application/json</code></small><br>
+  <small>JSON body:</small>
+  <div class="url-box">{"text": "Dictated Text", "agent": "metis"}</div>
+  <small>Tap <code>text</code> value → select <strong>Dictated Text</strong> variable</small>
+</div>
+
+<div class="step">
+  <span class="step-num">4.</span> Add action: <strong>Play Audio</strong>
+</div>
+
+<div class="step">
+  <span class="step-num">5.</span> Name it <strong>Ask Metis</strong><br>
+  <small>Settings → Siri → add phrase: <code>"Ask Metis"</code></small>
+</div>
+
+<h2>Use It</h2>
+<p>Say <strong>"Hey Siri, Ask Metis"</strong> → speak your question → hear the answer.</p>
+
+<h2>Other Agents</h2>
+<p>Change the <code>agent</code> value in the JSON body:</p>
+<div class="agent-grid">
+  <div class="agent">🧠 metis</div>
+  <div class="agent">🌍 atlas</div>
+  <div class="agent">🔧 hephaestus</div>
+  <div class="agent">📚 clio</div>
+  <div class="agent">📰 deepthought</div>
+  <div class="agent">💜 mara</div>
+</div>
+
+<div class="tip">
+  <strong>TIP:</strong> Create one shortcut per agent with different Siri phrases: "Ask Metis", "Ask Atlas", etc.
+</div>
+
+<h2>API Reference</h2>
+
+<div class="step">
+  <strong>POST /api/chat</strong> — Full pipeline (LLM + TTS)<br>
+  <small>Returns: WAV audio</small><br>
+  <code>{"text": "your question", "agent": "metis"}</code>
+</div>
+
+<div class="step">
+  <strong>POST /api/speak</strong> — TTS only<br>
+  <small>Returns: WAV audio</small><br>
+  <code>{"text": "text to speak", "agent": "metis"}</code>
+</div>
+
+</body>
+</html>

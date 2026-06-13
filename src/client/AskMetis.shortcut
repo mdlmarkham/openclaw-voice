@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>WFWorkflowActions</key>
+	<array>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.dictate.text</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>WFDictationStopBehavior</key>
+				<string>AfterPause</string>
+				<key>WFLanguage</key>
+				<string>en-US</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.downloadurl</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>WFHTTPBodyType</key>
+				<string>JSON</string>
+				<key>WFHTTPHeaders</key>
+				<array>
+					<dict>
+						<key>WFHTTPHeaderKey</key>
+						<string>Content-Type</string>
+						<key>WFHTTPHeaderValue</key>
+						<string>application/json</string>
+					</dict>
+				</array>
+				<key>WFHTTPMethod</key>
+				<string>POST</string>
+				<key>WFJSONValues</key>
+				<array>
+					<dict>
+						<key>WFJSONKey</key>
+						<string>text</string>
+						<key>WFJSONValueType</key>
+						<string>Variable</string>
+						<key>WFJSONVariable</key>
+						<string>Dictated Text</string>
+					</dict>
+					<dict>
+						<key>WFJSONKey</key>
+						<string>agent</string>
+						<key>WFJSONValue</key>
+						<string>metis</string>
+						<key>WFJSONValueType</key>
+						<string>Text</string>
+					</dict>
+				</array>
+				<key>WFURL</key>
+				<string>https://openclaw.tailf9480.ts.net/voice/api/chat</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.playaudio</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict/>
+		</dict>
+	</array>
+	<key>WFWorkflowHasShortcutStartupVariables</key>
+	<false/>
+	<key>WFWorkflowIcon</key>
+	<dict>
+		<key>WFWorkflowIconGlyphNumber</key>
+		<integer>59843</integer>
+		<key>WFWorkflowIconStartColor</key>
+		<integer>41564543</integer>
+	</dict>
+	<key>WFWorkflowMinimumClientVersion</key>
+	<integer>411</integer>
+	<key>WFWorkflowName</key>
+	<string>Ask Metis</string>
+	<key>WFWorkflowTypes</key>
+	<array>
+		<string>NCWidget</string>
+		<string>WatchKit</string>
+	</array>
+</dict>
+</plist>

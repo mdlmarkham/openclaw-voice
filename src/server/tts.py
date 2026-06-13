@@ -1,8 +1,12 @@
 """
 Text-to-Speech module using ElevenLabs, Chatterbox, or fallbacks.
+
+Olympus optimization: Edge TTS now runs natively async (no more event loop
+errors from running asyncio.run inside ThreadPoolExecutor threads).
 """
 
 import asyncio
+import io
 import os
 from typing import Optional, AsyncGenerator
 from pathlib import Path
@@ -13,12 +17,12 @@ from loguru import logger
 
 class ChatterboxTTS:
     """Text-to-Speech using ElevenLabs, Chatterbox, or fallbacks."""
-    
+
     def __init__(
         self,
         voice_sample: Optional[str] = None,
         device: str = "auto",
-        voice_id: Optional[str] = None,  # ElevenLabs voice ID
+        voice_id: Optional[str] = None,
     ):
         self.voice_sample = voice_sample
         self.device = device
@@ -27,11 +31,11 @@ class ChatterboxTTS:
         self.model = None
         self._backend = "mock"
         self._elevenlabs_client = None
+        self._loop = None  # Store our own event loop for Edge TTS
         self._load_model()
-    
+
     def _load_model(self):
         """Load the TTS model."""
-        # Try ElevenLabs first (cloud, high quality)
         elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY")
         if elevenlabs_key:
             try:
@@ -54,10 +58,9 @@ class ChatterboxTTS:
                     logger.warning(f"ElevenLabs auto-install failed: {e}")
             except Exception as e:
                 logger.warning(f"ElevenLabs failed: {e}")
-        
-        # Try Edge TTS (Microsoft, free, no API key, fast)
+
         try:
-            import edge_tts
+            import edge_tts  # noqa: F401
             self._backend = "edge"
             logger.info("✅ Edge TTS ready (Microsoft, free, no API key)")
             return
@@ -65,8 +68,7 @@ class ChatterboxTTS:
             logger.warning("edge-tts not installed")
         except Exception as e:
             logger.warning(f"Edge TTS check failed: {e}")
-        
-        # Try Chatterbox (self-hosted)
+
         try:
             from chatterbox.tts import ChatterboxTTS as CBModel
             logger.info("Loading Chatterbox TTS...")
@@ -78,8 +80,7 @@ class ChatterboxTTS:
             logger.warning("Chatterbox not installed")
         except Exception as e:
             logger.warning(f"Chatterbox failed: {e}")
-        
-        # Try XTTS
+
         try:
             from TTS.api import TTS
             logger.info("Loading Coqui XTTS...")
@@ -91,11 +92,10 @@ class ChatterboxTTS:
             logger.warning("Coqui TTS not installed")
         except Exception as e:
             logger.warning(f"XTTS failed: {e}")
-        
-        # Mock mode
+
         logger.warning("⚠️ No TTS backend - using mock mode (silence)")
         self._backend = "mock"
-    
+
     def _get_device(self) -> str:
         if self.device != "auto":
             return self.device
@@ -108,22 +108,28 @@ class ChatterboxTTS:
         except ImportError:
             pass
         return "cpu"
-    
+
     async def synthesize(self, text: str) -> np.ndarray:
-        """Synthesize speech from text."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._synthesize_sync, text)
-    
+        """Synthesize speech from text. Returns float32 numpy array at 24kHz."""
+        if self._backend == "edge":
+            return await self._synthesize_edge(text)
+        elif self._backend == "elevenlabs":
+            return await self._synthesize_elevenlabs(text)
+        elif self._backend in ("chatterbox", "xtts"):
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._synthesize_sync_local, text)
+        else:
+            return np.zeros(12000, dtype=np.float32)
+
     async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
         """
         Stream synthesized audio chunks.
-        
+
         Yields:
-            Raw PCM audio chunks (24kHz, 16-bit)
+            Raw PCM audio chunks (24kHz, 16-bit signed integer)
         """
         if self._backend == "elevenlabs":
             try:
-                # Use streaming API
                 audio_generator = self._elevenlabs_client.text_to_speech.convert(
                     voice_id=self.voice_id,
                     text=text,
@@ -134,84 +140,86 @@ class ChatterboxTTS:
                     yield chunk
             except Exception as e:
                 logger.error(f"ElevenLabs streaming error: {e}")
-        else:
-            # Non-streaming fallback
-            audio = await self.synthesize(text)
-            yield audio.tobytes()
-    
-    def _synthesize_sync(self, text: str) -> np.ndarray:
-        """Synchronous synthesis."""
-        if self._backend == "edge":
-            # Edge TTS uses asyncio, so we run it synchronously
+        elif self._backend == "edge":
+            # Edge TTS: async-native, runs in the current event loop
             try:
                 import edge_tts
-                import io
-                import struct
-                
-                async def _edge_synthesize():
-                    # Use a natural-sounding voice
-                    voice = self._edge_voice or "en-US-JennyNeural"
-                    communicate = edge_tts.Communicate(text, voice)
-                    audio_buffer = io.BytesIO()
-                    # Edge TTS writes MP3; we need to convert to PCM
-                    await communicate.save_to_buffer(audio_buffer)
-                    audio_buffer.seek(0)
-                    
-                    # Decode MP3 to PCM using soundfile
-                    import soundfile as sf
-                    data, sr = sf.read(audio_buffer)
-                    # Resample to 24kHz if needed
-                    if sr != 24000:
-                        import librosa
-                        data = librosa.resample(data, orig_sr=sr, target_sr=24000)
-                    return data.astype(np.float32)
-                
-                # Run async function synchronously
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're inside an async context, use nest_asyncio
-                    import nest_asyncio
-                    nest_asyncio.apply()
-                return asyncio.run(_edge_synthesize())
+
+                voice = self._edge_voice or "en-US-JennyNeural"
+                communicate = edge_tts.Communicate(text, voice)
+                audio_buffer = io.BytesIO()
+
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        yield chunk["data"]
+
             except Exception as e:
-                logger.error(f"Edge TTS error: {e}")
-                return np.zeros(16000, dtype=np.float32)  # 1 sec silence on error
-        
-        elif self._backend == "elevenlabs":
+                logger.error(f"Edge TTS streaming error: {e}")
+        else:
+            # Fallback: synthesize then yield as one chunk
             try:
-                # Generate audio with ElevenLabs (turbo model for speed)
-                audio_generator = self._elevenlabs_client.text_to_speech.convert(
-                    voice_id=self.voice_id,
-                    text=text,
-                    model_id="eleven_turbo_v2_5",  # Fastest model (~2x faster)
-                    output_format="pcm_24000",  # 24kHz PCM (matches server expectation)
-                )
-                # Collect all chunks
-                audio_bytes = b"".join(audio_generator)
-                # Convert PCM bytes to numpy array
-                audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                # Normalize to float32 [-1, 1]
-                return audio_array.astype(np.float32) / 32768.0
+                audio = await self.synthesize(text)
+                if audio is not None and len(audio) > 0:
+                    # Convert float32 to int16 PCM bytes
+                    audio_int16 = (audio * 32768.0).astype(np.int16)
+                    yield audio_int16.tobytes()
             except Exception as e:
-                logger.error(f"ElevenLabs TTS error: {e}")
-                return np.zeros(16000, dtype=np.float32)  # 1 sec silence on error
-        
-        elif self._backend == "chatterbox":
+                logger.error(f"TTS fallback error: {e}")
+
+    async def _synthesize_edge(self, text: str) -> np.ndarray:
+        """Edge TTS — fully async, no event loop hacks."""
+        try:
+            import edge_tts
+
+            voice = self._edge_voice or "en-US-JennyNeural"
+            communicate = edge_tts.Communicate(text, voice)
+            audio_buffer = io.BytesIO()
+            await communicate.save_to_buffer(audio_buffer)
+            audio_buffer.seek(0)
+
+            # Decode MP3 to float32 PCM
+            import soundfile as sf
+            data, sr = sf.read(audio_buffer)
+            if sr != 24000:
+                import librosa
+                data = librosa.resample(data, orig_sr=sr, target_sr=24000)
+            return data.astype(np.float32)
+        except Exception as e:
+            logger.error(f"Edge TTS error: {e}")
+            return np.zeros(16000, dtype=np.float32)
+
+    async def _synthesize_elevenlabs(self, text: str) -> np.ndarray:
+        """ElevenLabs synthesis."""
+        try:
+            audio_generator = self._elevenlabs_client.text_to_speech.convert(
+                voice_id=self.voice_id,
+                text=text,
+                model_id="eleven_turbo_v2_5",
+                output_format="pcm_24000",
+            )
+            audio_bytes = b"".join(audio_generator)
+            audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+            return audio_array.astype(np.float32) / 32768.0
+        except Exception as e:
+            logger.error(f"ElevenLabs TTS error: {e}")
+            return np.zeros(16000, dtype=np.float32)
+
+    def _synthesize_sync_local(self, text: str) -> np.ndarray:
+        """Synchronous synthesis for local models (chatterbox, xtts)."""
+        if self._backend == "chatterbox":
             if self.voice_sample:
                 audio = self.model.generate(text, audio_prompt=self.voice_sample)
             else:
                 audio = self.model.generate(text)
             return audio.cpu().numpy().astype(np.float32)
-        
+
         elif self._backend == "xtts":
             if self.voice_sample:
                 wav = self.model.tts(text=text, speaker_wav=self.voice_sample, language="en")
             else:
                 wav = self.model.tts(text=text, language="en")
             return np.array(wav, dtype=np.float32)
-        
+
         else:
-            # Mock mode - return short silence
             logger.debug(f"Mock TTS: '{text[:50]}...'")
-            # 0.5 seconds of silence at 24kHz
             return np.zeros(12000, dtype=np.float32)

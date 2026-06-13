@@ -10,8 +10,12 @@ Edge TTS: Cloud-based, fast, requires network.
 import asyncio
 import io
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, AsyncGenerator
+from typing import TYPE_CHECKING, Optional, AsyncGenerator
+
+if TYPE_CHECKING:
+    from .tts_higgs import HiggsTTS
 
 import numpy as np
 from loguru import logger
@@ -396,3 +400,108 @@ class _EdgeFallback:
             yield audio_int16.tobytes()
         except Exception as e:
             logger.error(f"Edge TTS fallback error: {e}")
+
+
+class TTSRouter:
+    """Routes TTS requests to the best available backend.
+
+    Primary: Higgs (cloud API, low latency, expressive)
+    Fallback: Supertonic (local CPU, always available)
+    Edge case: Direct to Supertonic when Higgs can't load or is disabled.
+    """
+
+    def __init__(
+        self,
+        supertonic: ChatterboxTTS,
+        higgs: Optional["HiggsTTS"] = None,
+        backend: str = "auto",
+    ):
+        self._supertonic = supertonic
+        self._higgs = higgs
+        self._backend = backend
+
+    @property
+    def supertonic(self) -> "ChatterboxTTS":
+        return self._supertonic
+
+    @property
+    def available(self) -> bool:
+        return self._supertonic is not None
+
+    @property
+    def active_backend(self) -> str:
+        if self._backend == "higgs" and self._higgs and self._higgs.available:
+            return "higgs"
+        return self._supertonic._backend if self._supertonic else "mock"
+
+    async def synthesize_stream(
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        agent_hint: Optional[str] = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Synthesize speech using the best available backend."""
+        prefer_higgs = self._backend != "supertonic" and self._higgs and self._higgs.available
+
+        if prefer_higgs:
+            # Inject control tokens for personality
+            enriched = _inject_control_tokens(text, agent_hint) if agent_hint else text
+            async for chunk in self._higgs.synthesize_stream(enriched, voice=voice):
+                yield chunk
+            return
+
+        if self._supertonic:
+            clean = _strip_control_tokens(text) if not prefer_higgs else text
+            async for chunk in self._supertonic.synthesize_stream(clean):
+                yield chunk
+
+    async def synthesize(
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        agent_hint: Optional[str] = None,
+    ) -> np.ndarray:
+        chunks = []
+        async for chunk in self.synthesize_stream(text, voice=voice, agent_hint=agent_hint):
+            chunks.append(chunk)
+        if not chunks:
+            return np.zeros(12000, dtype=np.float32)
+        raw = b"".join(chunks)
+        pcm_s16 = np.frombuffer(raw, dtype=np.int16)
+        return pcm_s16.astype(np.float32) / 32768.0
+
+    def status(self) -> dict:
+        base = self._supertonic.status() if self._supertonic else {"backend": "not_loaded"}
+        base["router_backend"] = self.active_backend
+        base["higgs_available"] = bool(self._higgs and self._higgs.available)
+        return base
+
+    async def close(self) -> None:
+        if self._higgs:
+            await self._higgs.close()
+
+
+# Agent control token definitions
+_AGENT_CONTROL_TOKENS = {
+    "metis": "<|emotion:contemplation|><|prosody:pause|>",
+    "atlas": "<|emotion:determination|>",
+    "hephaestus": "<|emotion:contentment|><|prosody:speed_slow|>",
+    "clio": "<|emotion:contemplation|><|prosody:speed_slow|>",
+    "deepthought": "<|emotion:enthusiasm|>",
+    "mara": "<|emotion:affection|><|prosody:pause|>",
+}
+
+_CONTROL_TOKEN_RE = re.compile(r"<\|[a-z_]+:[a-z_]+(?::[a-z_]+)?\|>")
+
+
+def _inject_control_tokens(text: str, agent_hint: Optional[str]) -> str:
+    """Prepend Higgs control tokens for the given agent."""
+    tokens = _AGENT_CONTROL_TOKENS.get(agent_hint or "")
+    if tokens:
+        return f"{tokens} {text}"
+    return text
+
+
+def _strip_control_tokens(text: str) -> str:
+    """Remove Higgs control tokens (for fallback to non-Higgs TTS)."""
+    return _CONTROL_TOKEN_RE.sub("", text).strip()

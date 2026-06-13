@@ -10,11 +10,12 @@ from typing import Optional
 from .backend import AIBackend
 from .pipeline import VoicePipeline
 from .stt import WhisperSTT
-from .tts import ChatterboxTTS
+from .tts import ChatterboxTTS, TTSRouter
 from .vad import VoiceActivityDetector
 
 stt: Optional[WhisperSTT] = None
 tts: Optional[ChatterboxTTS] = None
+tts_router: Optional[TTSRouter] = None
 backend: Optional[AIBackend] = None
 vad: Optional[VoiceActivityDetector] = None
 pipeline: Optional[VoicePipeline] = None

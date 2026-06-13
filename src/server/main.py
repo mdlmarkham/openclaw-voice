@@ -23,7 +23,8 @@ from .config import settings
 from .pipeline import VoicePipeline
 from .routes import router
 from .stt import WhisperSTT
-from .tts import ChatterboxTTS
+from .tts import ChatterboxTTS, TTSRouter
+from .tts_higgs import HiggsTTS
 from .vad import VoiceActivityDetector
 
 
@@ -60,14 +61,27 @@ async def lifespan(app: FastAPI):
         asyncio.to_thread(VoiceActivityDetector),
     )
 
+    higgs = HiggsTTS(
+        api_key=settings.boson_api_key,
+        default_voice=settings.higgs_default_voice,
+        timeout=settings.higgs_timeout_seconds,
+    )
+    state.tts_router = TTSRouter(
+        supertonic=state.tts,
+        higgs=higgs,
+        backend=settings.tts_backend,
+    )
+
     if state.stt._backend == "mock":
         logger.warning(
             "⚠️ STT is in MOCK mode — install faster-whisper or openai-whisper for real speech recognition"
         )
-    if state.tts._backend == "mock":
+    if state.tts._backend == "mock" and not higgs.available:
         logger.error(
-            "❌ No TTS backend available — set ELEVENLABS_API_KEY or install a local TTS backend"
+            "❌ No TTS backend available — set BOSON_API_KEY or ELEVENLABS_API_KEY"
         )
+    elif higgs.available:
+        logger.info("🔊 Higgs Audio v3 TTS backend available")
     elif state.tts._backend != "elevenlabs":
         logger.warning(f"⚠️ TTS using fallback backend: {state.tts._backend}")
 
@@ -122,7 +136,7 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing voice pipeline")
     state.pipeline = VoicePipeline(
         stt=state.stt,
-        tts=state.tts,
+        tts=state.tts_router or state.tts,
         backend=state.backend,
         sample_rate=settings.sample_rate,
     )
@@ -132,7 +146,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down OpenClaw Voice server...")
-    state.stt = state.tts = state.backend = state.vad = state.pipeline = None
+    state.stt = state.tts = state.tts_router = state.backend = state.vad = state.pipeline = None
     if state.stt_executor:
         state.stt_executor.shutdown(wait=False)
     if state.tts_executor:

@@ -59,6 +59,7 @@ async def health():
             "uptime_seconds": round(time.time() - app_state._startup_time, 1) if app_state._startup_time else 0,
             "stt": app_state.stt.status() if app_state.stt else {"backend": "not_loaded"},
             "tts": app_state.tts.status() if app_state.tts else {"backend": "not_loaded"},
+            "tts_router": app_state.tts_router.status() if app_state.tts_router else None,
             "backend": app_state.backend.backend_type if app_state.backend else "not_loaded",
             "vad": "loaded" if app_state.vad else "not_loaded",
             "config": {

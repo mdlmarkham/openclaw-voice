@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     openclaw_gateway_token: Optional[str] = None
     voice_model: Optional[str] = None
 
+    # TTS backend selection: "auto" | "higgs" | "supertonic" (default: auto)
+    tts_backend: str = "auto"
+
+    # Higgs / Boson Cloud API
+    boson_api_key: Optional[str] = None
+    higgs_default_voice: str = "eleanor"
+    higgs_model: str = "higgs-audio-v3-tts"
+    higgs_api_url: str = "https://api.boson.ai/v1/audio/speech"
+    higgs_timeout_seconds: int = 3
+
     sample_rate: int = 16000
     cors_origins: str = "*"
     system_prompt: str = "unused_in_openclaw_mode"

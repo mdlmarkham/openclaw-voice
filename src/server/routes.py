@@ -177,6 +177,7 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info(f"WebSocket connected from {client_id}")
 
     audio_buffer: list[np.ndarray] = []
+    buffer_samples = 0
     MAX_AUDIO_BUFFER_SECONDS = 30
     MAX_AUDIO_BUFFER_SAMPLES = settings.sample_rate * MAX_AUDIO_BUFFER_SECONDS
     is_listening = False
@@ -223,6 +224,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
                         await transport.send_event(event)
                 audio_buffer = []
+                buffer_samples = 0
                 await transport.send_json({"type": "listening_stopped"})
 
             elif msg_type == "audio" and is_listening:
@@ -230,10 +232,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     audio_bytes = base64.b64decode(msg["data"])
                     audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
 
-                    total_samples = sum(len(chunk) for chunk in audio_buffer) + len(audio_np)
-                    if total_samples > MAX_AUDIO_BUFFER_SAMPLES:
+                    buffer_samples += len(audio_np)
+                    if buffer_samples > MAX_AUDIO_BUFFER_SAMPLES:
                         logger.warning(
-                            f"Audio buffer cap reached ({total_samples} samples), processing now"
+                            f"Audio buffer cap reached ({buffer_samples} samples), processing now"
                         )
                         audio_buffer.append(audio_np)
                         is_listening = False
@@ -242,6 +244,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             async for event in app_state.pipeline.process_audio(audio_buffer, session):
                                 await transport.send_event(event)
                         audio_buffer = []
+                        buffer_samples = 0
                     else:
                         audio_buffer.append(audio_np)
 
@@ -323,6 +326,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
     logger.info(f"WebRTC session started: {session_id}")
 
     audio_buffer: list[np.ndarray] = []
+    buffer_samples = 0
     MAX_AUDIO_BUFFER_SECONDS = 30
     MAX_AUDIO_BUFFER_SAMPLES = settings.sample_rate * MAX_AUDIO_BUFFER_SECONDS
     is_listening = False
@@ -339,6 +343,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
             if msg_type == "start_listening":
                 is_listening = True
                 audio_buffer = []
+                buffer_samples = 0
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"[webrtc:{session_id}] Agent selected: {session_agent}")
@@ -366,6 +371,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
                         await transport.send_event(event)
                 audio_buffer = []
+                buffer_samples = 0
                 await transport.send_json({"type": "listening_stopped"})
 
             elif msg_type == "audio_frame" and is_listening:
@@ -377,8 +383,8 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                 except Exception:
                     continue
 
-                total = sum(len(c) for c in audio_buffer) + len(audio_np)
-                if total > MAX_AUDIO_BUFFER_SAMPLES:
+                buffer_samples += len(audio_np)
+                if buffer_samples > MAX_AUDIO_BUFFER_SAMPLES:
                     logger.warning(
                         f"[webrtc:{session_id}] Audio buffer cap, processing now"
                     )
@@ -391,6 +397,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                         ):
                             await transport.send_event(event)
                     audio_buffer = []
+                    buffer_samples = 0
                 else:
                     audio_buffer.append(audio_np)
 

@@ -7,6 +7,7 @@ Orchestrates the full voice pipeline:
 Emits typed ServerEvents that the transport layer serializes to JSON.
 """
 
+import re
 import time
 from typing import AsyncIterator, Optional
 
@@ -30,7 +31,7 @@ from .stt import WhisperSTT
 from .text_utils import clean_for_speech
 from .tts import ChatterboxTTS
 
-SENTENCE_SEPS = [". ", "! ", "? ", ".\n", "!\n", "?\n"]
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 class VoicePipeline:
@@ -93,25 +94,18 @@ class VoicePipeline:
 
                 yield ResponseChunkEvent(text=chunk)
 
-                while any(sep in sentence_buffer for sep in SENTENCE_SEPS):
-                    earliest_idx = len(sentence_buffer)
-                    for sep in SENTENCE_SEPS:
-                        idx = sentence_buffer.find(sep)
-                        if idx != -1 and idx < earliest_idx:
-                            earliest_idx = idx + len(sep)
-
-                    if earliest_idx < len(sentence_buffer):
-                        sentence = sentence_buffer[:earliest_idx].strip()
-                        sentence_buffer = sentence_buffer[earliest_idx:]
-
-                        if sentence:
-                            async for event in self._speak_sentence(sentence, audio_seq):
-                                yield event
-                            sentence_count += 1
-                            if t_first_audio is None:
-                                t_first_audio = time.monotonic() - t_start
-                    else:
+                while True:
+                    parts = _SENTENCE_SPLIT_RE.split(sentence_buffer, maxsplit=1)
+                    if len(parts) < 2:
                         break
+                    sentence, sentence_buffer = parts[0].strip(), parts[1]
+
+                    if sentence:
+                        async for event in self._speak_sentence(sentence, audio_seq):
+                            yield event
+                        sentence_count += 1
+                        if t_first_audio is None:
+                            t_first_audio = time.monotonic() - t_start
 
             if sentence_buffer.strip():
                 async for event in self._speak_sentence(sentence_buffer.strip(), audio_seq):
@@ -153,4 +147,5 @@ class VoicePipeline:
                 yield AudioChunkEvent(data=audio_chunk, seq=seq)
         except Exception as tts_err:
             logger.error(f"TTS error: {tts_err}")
+            yield ErrorEvent(message=f"TTS synthesis failed: {tts_err}")
         yield SentenceEndEvent(seq=seq)

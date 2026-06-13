@@ -5,8 +5,10 @@ Creates the FastAPI app, configures middleware, manages the lifespan
 (model initialization / shutdown), and registers routes.
 """
 
+import asyncio
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -39,22 +41,34 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Authentication DISABLED (dev mode)")
 
-    logger.info(f"Loading STT model: {settings.stt_model}")
-    state.stt = WhisperSTT(model_name=settings.stt_model, device=settings.stt_device)
+    state.stt_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
+    state.tts_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts")
+
+    logger.info("Loading STT, TTS, and VAD models (parallel)...")
+    state.stt, state.tts, state.vad = await asyncio.gather(
+        asyncio.to_thread(
+            WhisperSTT,
+            model_name=settings.stt_model,
+            device=settings.stt_device,
+            executor=state.stt_executor,
+        ),
+        asyncio.to_thread(
+            ChatterboxTTS,
+            voice_sample=settings.tts_voice,
+            executor=state.tts_executor,
+        ),
+        asyncio.to_thread(VoiceActivityDetector),
+    )
+
     if state.stt._backend == "mock":
         logger.warning(
             "⚠️ STT is in MOCK mode — install faster-whisper or openai-whisper for real speech recognition"
         )
-
-    logger.info(f"Loading TTS model: {settings.tts_model}")
-    state.tts = ChatterboxTTS(voice_sample=settings.tts_voice)
     if state.tts._backend == "mock":
         logger.error(
             "❌ No TTS backend available — set ELEVENLABS_API_KEY or install a local TTS backend"
         )
-    elif state.tts._backend == "elevenlabs":
-        pass
-    else:
+    elif state.tts._backend != "elevenlabs":
         logger.warning(f"⚠️ TTS using fallback backend: {state.tts._backend}")
 
     gateway_url = settings.openclaw_gateway_url or os.getenv("OPENCLAW_GATEWAY_URL")
@@ -105,9 +119,6 @@ async def lifespan(app: FastAPI):
             system_prompt=settings.system_prompt,
         )
 
-    logger.info("Loading VAD model")
-    state.vad = VoiceActivityDetector()
-
     logger.info("Initializing voice pipeline")
     state.pipeline = VoicePipeline(
         stt=state.stt,
@@ -122,6 +133,11 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down OpenClaw Voice server...")
     state.stt = state.tts = state.backend = state.vad = state.pipeline = None
+    if state.stt_executor:
+        state.stt_executor.shutdown(wait=False)
+    if state.tts_executor:
+        state.tts_executor.shutdown(wait=False)
+    state.stt_executor = state.tts_executor = None
 
 
 app = FastAPI(title="OpenClaw Voice", version="0.3.0", lifespan=lifespan)

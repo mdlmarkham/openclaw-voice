@@ -10,10 +10,13 @@ Edge TTS: Cloud-based, fast, requires network.
 import asyncio
 import io
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, AsyncGenerator
 
 import numpy as np
 from loguru import logger
+
+from .audio_utils import float32_to_int16
 
 
 class ChatterboxTTS:
@@ -34,6 +37,7 @@ class ChatterboxTTS:
         voice_sample: Optional[str] = None,
         device: str = "auto",
         voice_id: Optional[str] = None,
+        executor: Optional["ThreadPoolExecutor"] = None,
     ):
         self.voice_sample = voice_sample
         self.device = device
@@ -41,6 +45,7 @@ class ChatterboxTTS:
         self._edge_voice = os.environ.get("EDGE_TTS_VOICE", "en-US-JennyNeural")
         self._supertonic_voice = os.environ.get("SUPERTONIC_VOICE", "F2")
         self._supertonic_model = os.environ.get("SUPERTONIC_MODEL", "supertonic-2")
+        self._executor = executor
         self.model = None
         self._backend = "mock"
         self._elevenlabs_client = None
@@ -192,7 +197,7 @@ class ChatterboxTTS:
             return await self._synthesize_elevenlabs(text)
         elif self._backend in ("chatterbox", "xtts"):
             loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self._synthesize_sync_local, text)
+            return await loop.run_in_executor(self._executor, self._synthesize_sync_local, text)
         else:
             return np.zeros(12000, dtype=np.float32)
 
@@ -248,10 +253,10 @@ class ChatterboxTTS:
             try:
                 loop = asyncio.get_event_loop()
                 audio_float32 = await loop.run_in_executor(
-                    None, self._synthesize_supertonic_sync, text
+                    self._executor, self._synthesize_supertonic_sync, text
                 )
                 if audio_float32 is not None and len(audio_float32) > 0:
-                    audio_int16 = (audio_float32 * 32768.0).clip(-32768, 32767).astype(np.int16)
+                    audio_int16 = float32_to_int16(audio_float32)
                     yield audio_int16.tobytes()
             except Exception as e:
                 logger.error(f"Supertonic TTS error: {e}")
@@ -261,7 +266,7 @@ class ChatterboxTTS:
             try:
                 audio_float32 = await self._synthesize_edge(text)
                 if audio_float32 is not None and len(audio_float32) > 0:
-                    audio_int16 = (audio_float32 * 32768.0).clip(-32768, 32767).astype(np.int16)
+                    audio_int16 = float32_to_int16(audio_float32)
                     yield audio_int16.tobytes()
             except Exception as e:
                 logger.error(f"Edge TTS streaming error: {e}")
@@ -271,7 +276,7 @@ class ChatterboxTTS:
             try:
                 audio = await self.synthesize(text)
                 if audio is not None and len(audio) > 0:
-                    audio_int16 = (audio * 32768.0).clip(-32768, 32767).astype(np.int16)
+                    audio_int16 = float32_to_int16(audio)
                     yield audio_int16.tobytes()
             except Exception as e:
                 logger.error(f"TTS fallback error: {e}")
@@ -290,12 +295,12 @@ class ChatterboxTTS:
             return audio.astype(np.float32)
         except Exception as e:
             logger.error(f"Supertonic synthesis error: {e}")
-            return np.zeros(12000, dtype=np.float32)
+            raise
 
     async def _synthesize_supertonic(self, text: str) -> np.ndarray:
         """Supertonic synthesis via executor."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._synthesize_supertonic_sync, text)
+        return await loop.run_in_executor(self._executor, self._synthesize_supertonic_sync, text)
 
     async def _synthesize_edge(self, text: str) -> np.ndarray:
         """Edge TTS — fully async, collect MP3 chunks and decode."""
@@ -321,7 +326,7 @@ class ChatterboxTTS:
             return data.astype(np.float32)
         except Exception as e:
             logger.error(f"Edge TTS error: {e}")
-            return np.zeros(16000, dtype=np.float32)
+            raise
 
     async def _synthesize_elevenlabs(self, text: str) -> np.ndarray:
         """ElevenLabs synthesis."""
@@ -337,7 +342,7 @@ class ChatterboxTTS:
             return audio_array.astype(np.float32) / 32768.0
         except Exception as e:
             logger.error(f"ElevenLabs TTS error: {e}")
-            return np.zeros(16000, dtype=np.float32)
+            raise
 
     def _synthesize_sync_local(self, text: str) -> np.ndarray:
         """Synchronous synthesis for local models (chatterbox, xtts)."""
@@ -387,7 +392,7 @@ class _EdgeFallback:
                 import soxr
 
                 data = soxr.resample(data, sr, 24000)
-            audio_int16 = (data * 32768.0).clip(-32768, 32767).astype(np.int16)
+            audio_int16 = float32_to_int16(data)
             yield audio_int16.tobytes()
         except Exception as e:
             logger.error(f"Edge TTS fallback error: {e}")

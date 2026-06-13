@@ -3,6 +3,8 @@ Speech-to-Text module using Whisper.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
 import numpy as np
 from loguru import logger
@@ -16,10 +18,12 @@ class WhisperSTT:
         model_name: str = "base",
         device: str = "auto",
         language: str = "en",
+        executor: Optional["ThreadPoolExecutor"] = None,
     ):
         self.model_name = model_name
         self.device = device
         self.language = language
+        self._executor = executor
         self.model = None
         self._backend = "mock"
         self._load_model()
@@ -87,7 +91,7 @@ class WhisperSTT:
     async def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe audio to text."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._transcribe_sync, audio)
+        return await loop.run_in_executor(self._executor, self._transcribe_sync, audio)
 
     def status(self) -> dict:
         """Return STT status dict for health checks."""

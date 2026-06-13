@@ -20,6 +20,7 @@ from aiortc import (
 from av import AudioFrame, AudioResampler
 from loguru import logger
 
+from .audio_utils import float32_to_int16, int16_to_float32
 from .events import AudioChunkEvent, ErrorEvent, ServerEvent
 from .transport import AudioTransport
 
@@ -46,7 +47,7 @@ class AudioInputTrack(MediaStreamTrack):
         resampled = self._resampler.resample(frame)
         for f in resampled:
             raw = f.to_ndarray()
-            pcm = raw.astype(np.float32) / 32768.0
+            pcm = int16_to_float32(raw.squeeze())
             self._queue.put_nowait(pcm.squeeze())
         return frame
 
@@ -73,7 +74,7 @@ class AudioOutputTrack(MediaStreamTrack):
         )
 
     async def push_pcm(self, pcm: np.ndarray, rate: int = 24000) -> None:
-        pcm_s16 = np.clip(pcm * 32768.0, -32768, 32767).astype(np.int16)
+        pcm_s16 = float32_to_int16(pcm)
         frame = AudioFrame.from_ndarray(pcm_s16, format="s16", layout="mono")
         frame.sample_rate = rate
         await self._queue.put(frame)

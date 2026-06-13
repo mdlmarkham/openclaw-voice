@@ -1,11 +1,12 @@
 # OpenClaw Voice
 
-**Open-source browser-based voice interface for AI assistants.**
+**Self-hosted, browser-based voice interface for AI agents.**
 
-Talk to your AI like you talk to Alexa — but self-hosted, private, and connected to your own agent.
+Talk to your AI like you talk to Alexa — but private, local, and connected to your own agent with full memory continuity.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-green.svg)
+![Version](https://img.shields.io/badge/version-0.3.0-orange.svg)
 
 🌐 **Website:** [openclawvoice.com](https://openclawvoice.com)
 
@@ -13,13 +14,15 @@ Talk to your AI like you talk to Alexa — but self-hosted, private, and connect
 
 | Feature | Description |
 |---------|-------------|
-| 🎤 **Local STT** | Whisper runs locally via faster-whisper. Your voice never leaves your machine. |
-| 🔊 **Streaming TTS** | ElevenLabs with sentence-by-sentence streaming. Hear responses while they generate. |
+| 🎤 **Local STT** | faster-whisper runs locally. Your voice never leaves your machine. |
+| 🔊 **Streaming TTS** | Supertonic (local CPU, 31 languages) or ElevenLabs (cloud). Sentence-by-sentence streaming. |
 | 🎯 **Voice Activity Detection** | Silero VAD filters background noise. Works in noisy environments. |
 | 🧹 **Smart Text Cleaning** | Strips markdown, hashtags, URLs before TTS. No more "hash hash". |
-| 🔌 **Any AI Backend** | OpenAI, Claude, or full OpenClaw agent with memory and tools. |
-| 🌐 **Browser-Based** | No app install. Works on desktop and mobile. |
+| 🔌 **OpenClaw Gateway** | Full agent context — same memory, persona, and tools as text chat. Seamless cross-channel continuity. |
+| 🎭 **Per-Agent Voices** | Each agent gets a distinct Supertonic voice. Métis → F2, Atlas → M2, Hephaestus → M4. |
+| 🌐 **Browser-Based** | No app install. Works on desktop and mobile. HTTPS via Tailscale. |
 | 🚗 **Continuous Mode** | Hands-free conversation. Auto-listens after each response. |
+| 🔒 **API Key Auth** | Optional per-client authentication with tiered rate limits. |
 
 ## Quick Start
 
@@ -31,33 +34,16 @@ cd openclaw-voice
 # Install
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[all]"
 
-# Optional: Install VAD support (better noise handling)
-pip install torch torchaudio
-
-# Configure (create .env from example)
+# Configure
 cp .env.example .env
 # Edit .env with your API keys
 
 # Run
-PYTHONPATH=. python -m src.server.main
+PYTHONPATH=. python -m uvicorn src.server.main:app --host 0.0.0.0 --port 8765
 
 # Open http://localhost:8765
-```
-
-## For OpenClaw Agents (Auto-Install)
-
-One-liner for AI agents to self-install:
-
-```bash
-cd /tmp && \
-git clone https://github.com/Purple-Horizons/openclaw-voice.git && \
-cd openclaw-voice && \
-python3 -m venv .venv && source .venv/bin/activate && \
-pip install -r requirements.txt torch torchaudio && \
-PYTHONPATH=. ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" OPENAI_API_KEY="$OPENAI_API_KEY" \
-  nohup python -m src.server.main > /tmp/voice-server.log 2>&1 &
 ```
 
 ## Configuration
@@ -66,102 +52,101 @@ PYTHONPATH=. ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" OPENAI_API_KEY="$OPENAI_AP
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ELEVENLABS_API_KEY` | Yes* | — | ElevenLabs API key for TTS |
-| `OPENAI_API_KEY` | Yes* | — | OpenAI API key (if not using gateway) |
-| `OPENCLAW_GATEWAY_URL` | No | — | OpenClaw gateway URL for full agent |
+| `OPENCLAW_GATEWAY_URL` | No | — | OpenClaw gateway URL (enables full agent mode) |
 | `OPENCLAW_GATEWAY_TOKEN` | No | — | Gateway auth token |
+| `OPENCLAW_BACKEND_TYPE` | No | `openai` | Backend: `openclaw` or `openai` |
 | `OPENCLAW_PORT` | No | `8765` | Server port |
-| `OPENCLAW_STT_MODEL` | No | `base` | Whisper model size |
-| `OPENCLAW_STT_DEVICE` | No | `auto` | Device: `auto`, `cpu`, `cuda`, `mps` |
-| `OPENCLAW_REQUIRE_AUTH` | No | `false` | Require API keys for clients |
+| `OPENCLAW_STT_MODEL` | No | `small` | Whisper model size (see table below) |
+| `OPENCLAW_STT_DEVICE` | No | `auto` | Device: `auto`, `cpu`, `cuda` |
+| `OPENCLAW_TTS_MODEL` | No | `supertonic` | TTS backend (see table below) |
+| `SUPERTONIC_VOICE` | No | `F2` | Supertonic voice (F1-F5 female, M1-M5 male) |
+| `SUPERTONIC_MODEL` | No | `supertonic-2` | Supertonic model version |
+| `OPENCLAW_REQUIRE_AUTH` | No | `false` | Require API keys for WebSocket clients |
+| `OPENCLAW_MASTER_KEY` | No | — | Master key for API key management |
 
-*One of `OPENAI_API_KEY` or `OPENCLAW_GATEWAY_URL` required.
+> **OpenClaw gateway mode (recommended):** Set `OPENCLAW_GATEWAY_URL` and `OPENCLAW_GATEWAY_TOKEN`. The server sends only the user message to the gateway — no conversation history duplication. The gateway maintains full agent persona, memory, and workspace context, giving you seamless continuity between voice and text channels.
+>
+> **Direct OpenAI mode:** Set `OPENAI_API_KEY`. The server manages its own conversation history (last 10 turns). Note: conversation state is global — shared across all connected clients. For multi-user deployments, use the OpenClaw gateway.
 
 ### Whisper Model Sizes
 
 | Model | Speed | Quality | VRAM | Best For |
 |-------|-------|---------|------|----------|
 | `tiny` | Fastest | Fair | ~400MB | Quick testing |
-| `base` | Fast | Good | ~1GB | **Default. Good balance.** |
-| `small` | Medium | Better | ~2GB | Clearer transcription |
+| `base` | Fast | Good | ~1GB | Light deployments |
+| `small` | Medium | Better | ~2GB | **Default. Good balance.** |
 | `medium` | Slower | Great | ~5GB | Accuracy priority |
 | `large-v3-turbo` | Slow | Best | ~6GB | Maximum accuracy |
 
-### TTS Options
+### TTS Backends
 
-| Backend | Type | Quality | Latency | Notes |
-|---------|------|---------|---------|-------|
-| **ElevenLabs** | Cloud | Excellent | ~500ms | Default. Streaming supported. |
-| Chatterbox | Local | Very Good | ~1s | MIT license, voice cloning |
-| XTTS-v2 | Local | Excellent | ~1s | Voice cloning supported |
-| Mock | Local | None | 0ms | For testing (silence) |
+| Backend | Type | Quality | Latency | Languages | Notes |
+|---------|------|---------|---------|-----------|-------|
+| **Supertonic** | Local CPU | Very Good | ~200ms | 31 | **Default.** ONNX, no GPU needed. |
+| **ElevenLabs** | Cloud | Excellent | ~500ms | Multi | Streaming supported. Requires API key. |
+| Edge TTS | Cloud | Good | ~300ms | Multi | Microsoft voices. Free. |
+| Chatterbox | Local | Very Good | ~1s | English | MIT license, voice cloning |
+| Mock | Local | None | 0ms | — | For testing (silence) |
 
-ElevenLabs uses `eleven_turbo_v2_5` for fastest response.
+Backend priority: ElevenLabs (if key provided) → Supertonic → Edge TTS → Chatterbox → Mock.
 
-## OpenClaw Gateway Integration
+### Per-Agent Voice Mapping
 
-Connect to your full OpenClaw agent (same memory, tools, and persona as text chat):
+When using the OpenClaw gateway, each agent automatically gets a distinct voice:
 
-```bash
-# .env
-OPENCLAW_GATEWAY_URL=http://localhost:18789
-OPENCLAW_GATEWAY_TOKEN=your-token
-ELEVENLABS_API_KEY=your-key
-```
+| Agent | Voice | Character |
+|-------|-------|-----------|
+| Métis | F2 | Warm, clear female |
+| Atlas | M2 | Steady, authoritative male |
+| Hephaestus | M4 | Deeper, precise male |
+| Clio | F4 | Thoughtful, measured female |
+| Deepthought | M1 | Professional, clear male |
+| Mara | F5 | Gentle, warm female |
 
-Add to your `openclaw.json`:
-
-```json
-{
-  "gateway": {
-    "http": {
-      "endpoints": {
-        "chatCompletions": { "enabled": true }
-      }
-    }
-  },
-  "agents": {
-    "list": [
-      {
-        "id": "voice",
-        "workspace": "/path/to/workspace",
-        "model": "anthropic/claude-sonnet-4-5"
-      }
-    ]
-  }
-}
-```
+Override with `SUPERTONIC_VOICE` env var, or extend `ChatterboxTTS.AGENT_VOICE_MAP`.
 
 ## Architecture
 
 ```
-┌─────────────┐   WebSocket   ┌─────────────────────────────────────┐
-│   Browser   │◄────────────►│          Voice Server               │
-│  (mic/spk)  │               │                                     │
-└─────────────┘               │  ┌─────────┐  ┌─────┐  ┌─────────┐ │
-                              │  │ Whisper │→│ AI  │→│ElevenLabs│ │
-                              │  │  (STT)  │  │     │  │  (TTS)  │ │
-                              │  └─────────┘  └─────┘  └─────────┘ │
-                              │       ↑                     │      │
-                              │    [VAD]              [streaming]  │
-                              └─────────────────────────────────────┘
+┌─────────────┐   WebSocket   ┌──────────────────────────────────────────┐
+│   Browser   │◄────────────►│            Voice Server                  │
+│  (mic/spk)  │               │                                          │
+└─────────────┘               │  ┌───────────┐   ┌─────────────────┐    │
+                              │  │ Whisper   │   │  OpenClaw       │    │
+                              │  │ (STT)     │   │  Gateway        │    │
+                              │  └─────┬─────┘   │  or OpenAI      │    │
+                              │        │         └────────┬────────┘    │
+                              │        ▼                  ▼              │
+                              │  ┌─────────────────────────────────┐    │
+                              │  │     Supertonic / ElevenLabs    │    │
+                              │  │          (TTS)                  │    │
+                              │  └─────────────────────────────────┘    │
+                              │        ▲                                │
+                              │    [VAD]  [Audio buffer cap: 30s]     │
+                              └──────────────────────────────────────────┘
 ```
 
 **Streaming Flow:**
-1. User speaks → Whisper transcribes locally
-2. AI responds (streamed) → buffer sentences
-3. First sentence complete → TTS starts immediately
-4. Audio streams to browser while AI continues
-5. Result: ~50% faster perceived response
+1. User speaks → faster-whisper transcribes locally
+2. Text sent to OpenClaw gateway (voice-modality hint + user message only)
+3. Gateway responds with full agent context (persona, memory, tools)
+4. AI response streamed back → buffer completed sentences
+5. First sentence → TTS starts immediately (Supertonic ~200ms)
+6. Audio streams to browser while AI continues generating
+7. Result: ~50% faster perceived response than waiting for full completion
+
+**Cross-Channel Continuity:**
+
+When connected to the OpenClaw gateway, the voice server sends **only** the user's message and a voice-modality system hint. The gateway manages the full conversation — persona, workspace context, long-term memory. This means a conversation started in Telegram continues seamlessly in voice, and vice versa. No history duplication.
 
 ## HTTPS for Mobile
 
-Mobile browsers require HTTPS for microphone access. Options:
+Mobile browsers require HTTPS for microphone access.
 
-**Tailscale Funnel (easiest):**
+**Tailscale (recommended for self-hosting):**
 ```bash
-tailscale funnel 8765
-# Access via https://your-machine.tailnet-name.ts.net
+# The systemd unit uses Tailscale certificates
+# Place certs at /var/lib/tailscale/certs/your-host.ts.net.{crt,key}
 ```
 
 **nginx + Let's Encrypt:**
@@ -179,15 +164,45 @@ server {
 }
 ```
 
+## Systemd Service
+
+```ini
+[Unit]
+Description=OpenClaw Voice
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/openclaw-voice
+Environment=PYTHONPATH=.
+Environment=OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
+Environment=OPENCLAW_GATEWAY_TOKEN=your-token
+Environment=OPENCLAW_BACKEND_TYPE=openclaw
+Environment=OPENCLAW_PORT=8443
+Environment=OPENCLAW_STT_MODEL=small
+Environment=OPENCLAW_STT_DEVICE=cpu
+Environment=OPENCLAW_TTS_MODEL=supertonic
+Environment=SUPERTONIC_VOICE=F2
+Environment=SUPERTONIC_MODEL=supertonic-2
+Environment=OPENCLAW_REQUIRE_AUTH=false
+ExecStart=/path/to/openclaw-voice/.venv/bin/python3 -m uvicorn src.server.main:app \
+    --host 0.0.0.0 --port 8443 \
+    --ssl-keyfile /var/lib/tailscale/certs/host.ts.net.key \
+    --ssl-certfile /var/lib/tailscale/certs/host.ts.net.crt
+
+[Install]
+WantedBy=multi-user.target
+```
+
 ## API
 
 ### WebSocket Protocol
 
-Connect to `ws://localhost:8765/ws`:
+Connect to `ws://localhost:8765/ws` (or `wss://` for HTTPS):
 
 ```javascript
-// Start recording
-{ "type": "start_listening" }
+// Start recording (optionally select agent)
+{ "type": "start_listening", "agent": "metis" }  // agent optional
 
 // Send audio (base64 PCM float32, 16kHz)
 { "type": "audio", "data": "base64..." }
@@ -198,24 +213,99 @@ Connect to `ws://localhost:8765/ws`:
 // Receive events:
 { "type": "transcript", "text": "...", "final": true }
 { "type": "response_chunk", "text": "..." }        // Streaming text
-{ "type": "audio_chunk", "data": "...", "sample_rate": 24000 }  // Streaming audio
-{ "type": "response_complete", "text": "..." }     // Full response
-{ "type": "vad_status", "speech_detected": true }  // VAD feedback
+{ "type": "sentence_start", "seq": 0 }             // Sentence boundary
+{ "type": "audio_chunk", "data": "...", "sample_rate": 44100, "seq": 0 }
+{ "type": "sentence_end", "seq": 0 }               // Sentence boundary
+{ "type": "response_complete", "text": "..." }      // Full response
+{ "type": "vad_status", "speech_detected": true }   // VAD feedback
+{ "type": "listening_started" }
+{ "type": "listening_stopped" }
+{ "type": "history_cleared" }                        // After clear_history
 ```
+
+### REST Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Server status, model info, agent voice map |
+| `/` | GET | Voice UI (index.html) |
+| `/api/keys` | POST | Create API key (auth required) |
+| `/api/keys/{key}` | DELETE | Revoke API key (auth required) |
+
+### Health Check Response
+
+```json
+{
+  "status": "ok",
+  "uptime_seconds": 3600,
+  "stt": { "backend": "faster-whisper", "model": "small", "device": "cpu" },
+  "tts": {
+    "backend": "supertonic",
+    "model": "supertonic-2",
+    "voice": "F2",
+    "sample_rate": 44100,
+    "agent_voice_map": { "metis": "F2", "atlas": "M2", ... }
+  },
+  "backend": "openclaw",
+  "vad": "loaded",
+  "config": { "stt_model": "small", "tts_model": "supertonic", ... }
+}
+```
+
+## Security
+
+- **XSS protection:** All user and assistant text is HTML-escaped before rendering. Markdown transforms run on escaped content.
+- **CORS:** `allow_origins=["*"]` with `allow_credentials=False` — no credential leakage.
+- **Audio buffer cap:** 30-second maximum prevents unbounded memory growth from misbehaving clients.
+- **API key auth:** Optional per-client authentication with tiered rate limits (see `auth.py`).
+- **No runtime package installation:** Dependencies are declared in `pyproject.toml`, not installed at runtime.
+
+> **Note:** When `OPENCLAW_REQUIRE_AUTH=false` (the default), the `/api/keys` endpoint is accessible without authentication. This is intentional for local development. Enable auth for production deployments.
 
 ## Roadmap
 
 - [x] WebSocket voice gateway
-- [x] Whisper STT (local)
-- [x] ElevenLabs TTS
+- [x] Whisper STT (local, faster-whisper)
+- [x] Supertonic TTS (local CPU, 31 languages)
+- [x] ElevenLabs TTS (cloud, streaming)
 - [x] Streaming TTS (sentence-by-sentence)
 - [x] Voice Activity Detection (Silero)
 - [x] Text cleaning (markdown/hashtags/URLs)
 - [x] Continuous conversation mode
-- [x] OpenClaw gateway integration
+- [x] OpenClaw gateway integration (cross-channel continuity)
+- [x] Per-agent voice mapping
+- [x] API key authentication
+- [x] XSS protection (HTML escaping)
+- [x] Audio buffer cap (DoS prevention)
+- [ ] Server-side VAD endpointing
+- [ ] Barge-in (interrupt AI when user speaks)
 - [ ] WebRTC for lower latency
-- [ ] Voice cloning UI
-- [ ] Docker support
+- [ ] Per-connection conversation state (direct OpenAI mode)
+- [ ] Docker containerization
+- [ ] Mobile-optimized UI
+- [ ] Latency metrics dashboard
+
+## Project Structure
+
+```
+openclaw-voice/
+├── src/
+│   └── server/
+│       ├── main.py          # FastAPI app, WebSocket handler, health endpoint
+│       ├── backend.py       # AI backend (OpenClaw gateway or direct OpenAI)
+│       ├── tts.py           # TTS engine (Supertonic > ElevenLabs > Edge > Chatterbox)
+│       ├── stt.py           # STT engine (faster-whisper)
+│       ├── vad.py           # Voice Activity Detection (Silero)
+│       ├── auth.py          # API key management with tiered rate limits
+│       └── text_utils.py    # Markdown/URL stripping for TTS
+├── src/
+│   └── client/
+│       └── index.html       # Single-file browser UI
+├── .env.example             # Configuration template
+├── pyproject.toml           # Dependencies and metadata
+├── Dockerfile               # GPU-enabled Docker image
+└── .beads/                  # Issue tracking (Beads)
+```
 
 ## License
 
@@ -224,7 +314,8 @@ MIT License — see [LICENSE](LICENSE).
 ## Credits
 
 - [faster-whisper](https://github.com/guillaumekln/faster-whisper) — Local STT
-- [ElevenLabs](https://elevenlabs.io) — Text-to-Speech
+- [Supertonic](https://github.com/nicolabottura/supertonic) — Local TTS, 31 languages
+- [ElevenLabs](https://elevenlabs.io) — Cloud TTS
 - [Silero VAD](https://github.com/snakers4/silero-vad) — Voice Activity Detection
 - Built for [OpenClaw](https://openclaw.ai)
 

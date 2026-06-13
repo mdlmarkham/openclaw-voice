@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -172,10 +174,37 @@ if client_dir.exists():
 
 if __name__ == "__main__":
     import uvicorn
+    import multiprocessing
 
-    uvicorn.run(
-        "src.server.main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=True,
-    )
+    # Determine if we need dual listeners (TLS + plain HTTP for Tailscale Serve proxy)
+    ssl_keyfile = os.environ.get("OPENCLAW_SSL_KEYFILE")
+    ssl_certfile = os.environ.get("OPENCLAW_SSL_CERTFILE")
+
+    if ssl_keyfile and ssl_certfile:
+        # Run dual: TLS on configured port + plain HTTP on port-1 for reverse proxy
+        plain_port = settings.port - 1
+
+        def run_plain():
+            uvicorn.run(
+                "src.server.main:app",
+                host="127.0.0.1",
+                port=plain_port,
+            )
+
+        plain_proc = multiprocessing.Process(target=run_plain, daemon=True)
+        plain_proc.start()
+        logger.info(f"Plain HTTP listener started on 127.0.0.1:{plain_port} (for Tailscale Serve)")
+
+        uvicorn.run(
+            "src.server.main:app",
+            host=settings.host,
+            port=settings.port,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile,
+        )
+    else:
+        uvicorn.run(
+            "src.server.main:app",
+            host=settings.host,
+            port=settings.port,
+        )

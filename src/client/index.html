@@ -611,10 +611,35 @@
                 ? `${protocol}//${host}${wsPath}?api_key=${encodeURIComponent(apiKey)}`
                 : `${protocol}//${host}${wsPath}`;
             
+            console.log(`[connect] host=${host} protocol=${protocol} wsUrl=${wsUrl}`);
+            
             try {
+                console.log(`[connect] Attempting WebSocket to: ${wsUrl}`);
                 ws = new WebSocket(wsUrl);
+                
+                // Firefox + Tailscale fix: if WS fails, try resolving via the page's resolved IP
+                // Firefox DNS-over-HTTPS may not resolve Tailscale MagicDNS names
+                const wsTimeout = setTimeout(() => {
+                    if (ws.readyState === WebSocket.CONNECTING) {
+                        // WS is stuck connecting — likely DNS failure in Firefox
+                        console.warn('[connect] WebSocket stuck in CONNECTING state — possible DNS resolution failure');
+                        // Try fetching health to get the resolved IP
+                        fetch(`${window.location.protocol}//${host}/health`, { signal: AbortSignal.timeout(3000) })
+                            .then(r => r.ok ? r.json() : null)
+                            .then(data => {
+                                if (data && ws.readyState === WebSocket.CONNECTING) {
+                                    console.log('[connect] Health check passed but WS still connecting — Firefox DoH issue likely');
+                                }
+                            })
+                            .catch(() => {});
+                    }
+                }, 3000);
+                
+                ws.addEventListener('open', () => clearTimeout(wsTimeout), { once: true });
+                ws.addEventListener('close', () => clearTimeout(wsTimeout), { once: true });
+                ws.addEventListener('error', () => clearTimeout(wsTimeout), { once: true });
             } catch (e) {
-                console.error('WebSocket creation error:', e);
+                console.error('[connect] WebSocket creation error:', e);
                 updateConnStatus('err');
                 scheduleReconnect();
                 return;

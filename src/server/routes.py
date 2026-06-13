@@ -190,6 +190,24 @@ async def websocket_endpoint(websocket: WebSocket):
     client_id = f"{websocket.client.host}:{websocket.client.port}"
     logger.info(f"WebSocket connected from {client_id}")
 
+    # Server-side WebSocket ping to keep connection alive on mobile networks.
+    # Carrier NAT drops idle TCP after 30-60s. Client pings every 15s,
+    # we also send protocol-level pings every 20s.
+    last_ping = asyncio.get_event_loop().time()
+
+    async def keepalive():
+        """Send periodic WebSocket pings to prevent carrier NAT timeout."""
+        nonlocal last_ping
+        while True:
+            await asyncio.sleep(20)
+            try:
+                await websocket.send_json({"type": "ping"})
+                last_ping = asyncio.get_event_loop().time()
+            except Exception:
+                break
+
+    keepalive_task = asyncio.create_task(keepalive())
+
     audio_buffer: list[np.ndarray] = []
     buffer_samples = 0
     MAX_AUDIO_BUFFER_SECONDS = 30
@@ -392,6 +410,9 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error for {client_id}: {e}")
         await transport.close()
+    finally:
+        keepalive_task.cancel()
+        logger.info(f"WebSocket disconnected: {client_id}")
 
 
 # ── WebRTC signaling ─────────────────────────────────────────────

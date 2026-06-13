@@ -827,6 +827,12 @@
                     setStatus('History cleared');
                     setTimeout(() => setStatus('Ready'), 1500);
                     break;
+                case 'ping':
+                    // Server keepalive — respond with pong
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'pong' }));
+                    }
+                    break;
                 case 'pong':
                     break;
                 case 'interrupt':
@@ -1494,12 +1500,13 @@
         // Refresh config every 60s
         setInterval(fetchConfig, 60000);
         
-        // Keep connection alive with ping
+        // Keep connection alive with ping (aggressive for mobile networks — carrier NAT
+        // drops idle connections after 30-60s)
         setInterval(() => {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'ping' }));
             }
-        }, 30000);
+        }, 15000);
     </script>
 </body>
 </html>

@@ -10,12 +10,14 @@ import os
 import re
 import secrets
 import time
+import io
+import wave
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 from fastapi import APIRouter, Body, WebSocket
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from loguru import logger
 
 from .auth import PRICING_TIERS, APIKey, token_manager
@@ -154,6 +156,173 @@ async def list_voices():
                 {"voice_id": f.stem, "name": f.stem.split("_")[0], "size": f.stat().st_size}
             )
     return {"voices": voices}
+
+
+@router.post("/api/speak")
+async def speak(
+    text: str = Body(..., embed=True),
+    agent: str = Body(default="metis"),
+    voice: str = Body(default=None),
+    format: str = Body(default="wav"),
+):
+    """REST TTS endpoint — text in, audio out. For iOS Shortcuts, scripting, etc.
+    
+    Request body:
+        text: Text to synthesize
+        agent: Agent name (metis, atlas, hephaestus, clio, deepthought, mara)
+        voice: Override voice preset (optional)
+        format: "wav" (default) or "pcm" (raw 16-bit/24kHz mono)
+    
+    Returns: audio file (WAV or raw PCM)
+    """
+    if not text or not text.strip():
+        return JSONResponse(status_code=400, content={"error": "text is required"})
+    
+    text = text.strip()
+    
+    # Apply agent voice personality control tokens if Higgs is available
+    # For now, just pass text to Supertonic
+    tts = app_state.tts
+    if tts is None:
+        return JSONResponse(status_code=503, content={"error": "TTS not available"})
+    
+    try:
+        # Sanitize text for TTS (Supertonic doesn't support some characters)
+        import re as _re
+        tts_text = text
+        tts_text = _re.sub(r'[*_#`~=]', '', tts_text)
+        tts_text = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)
+        tts_text = tts_text.replace('=', ' equals ')
+        tts_text = _re.sub(r'\s+', ' ', tts_text).strip()
+        
+        # Synthesize the full text
+        audio_chunks = []
+        async for chunk in tts.synthesize_stream(tts_text):
+            audio_chunks.append(chunk)
+        
+        if not audio_chunks:
+            return JSONResponse(status_code=500, content={"error": "TTS produced no audio"})
+        
+        # Concatenate all chunks into a single buffer
+        # Chunks are raw PCM bytes (int16 at 24kHz mono)
+        pcm_bytes = b''.join(audio_chunks)
+        
+        if format == "pcm":
+            # Raw 16-bit PCM at 24kHz mono
+            return Response(
+                content=pcm_bytes,
+                media_type="audio/pcm",
+                headers={
+                    "Content-Disposition": f"attachment; filename=\"speech.pcm\"",
+                    "X-Sample-Rate": "24000",
+                    "X-Channels": "1",
+                    "X-Bits-Per-Sample": "16",
+                },
+            )
+        else:
+            # WAV format (16-bit PCM, 24kHz, mono)
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(24000)
+                wf.writeframes(pcm_bytes)
+            wav_bytes = buf.getvalue()
+            
+            return Response(
+                content=wav_bytes,
+                media_type="audio/wav",
+                headers={
+                    "Content-Disposition": f"attachment; filename=\"speech.wav\"",
+                },
+            )
+    
+    except Exception as e:
+        logger.error(f"TTS API error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.post("/api/chat")
+async def chat(
+    text: str = Body(..., embed=True),
+    agent: str = Body(default="metis"),
+    format: str = Body(default="wav"),
+):
+    """Full voice chat endpoint — text in, spoken response out.
+    
+    1. Sends text to OpenClaw gateway (LLM)
+    2. Gets response text
+    3. Synthesizes to speech
+    4. Returns audio
+    
+    For iOS Shortcuts: send a question, get a spoken answer.
+    
+    Request body:
+        text: User message
+        agent: Agent name
+        format: "wav" or "pcm"
+    """
+    if not text or not text.strip():
+        return JSONResponse(status_code=400, content={"error": "text is required"})
+    
+    backend = app_state.backend
+    tts = app_state.tts
+    if backend is None or tts is None:
+        return JSONResponse(status_code=503, content={"error": "Voice pipeline not available"})
+    
+    try:
+        # Get LLM response
+        response_text = ""
+        async for chunk in backend.chat_stream(text, agent_hint=agent):
+            response_text += chunk
+        
+        if not response_text.strip():
+            return JSONResponse(status_code=500, content={"error": "LLM returned empty response"})
+        
+        # Sanitize text for TTS (Supertonic doesn't support some characters)
+        import re
+        tts_text = response_text.strip()
+        # Remove markdown formatting that TTS can't handle
+        tts_text = re.sub(r'[*_#`~=]', '', tts_text)  # bold, italic, heading, code, strikethrough
+        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # links → text
+        tts_text = tts_text.replace('=', ' equals ')  # Supertonic can't handle =
+        tts_text = re.sub(r'\s+', ' ', tts_text).strip()  # collapse whitespace
+        
+        # Synthesize
+        audio_chunks = []
+        async for chunk in tts.synthesize_stream(response_text.strip()):
+            audio_chunks.append(chunk)
+        
+        if not audio_chunks:
+            return JSONResponse(status_code=500, content={"error": "TTS produced no audio"})
+        
+        pcm_bytes = b''.join(audio_chunks)
+        
+        if format == "pcm":
+            return Response(
+                content=pcm_bytes,
+                media_type="audio/pcm",
+                headers={
+                    "X-Sample-Rate": "24000",
+                },
+            )
+        else:
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(pcm_bytes)
+            wav_bytes = buf.getvalue()
+            
+            return Response(
+                content=wav_bytes,
+                media_type="audio/wav",
+            )
+    
+    except Exception as e:
+        logger.error(f"Chat API error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.websocket("/ws")

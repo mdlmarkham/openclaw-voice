@@ -91,14 +91,14 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-app = FastAPI(title="OpenClaw Voice", version="0.2.0-olympus")
+app = FastAPI(title="OpenClaw Voice", version="0.3.0")
 
 # CORS for cross-origin WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -160,6 +160,40 @@ async def startup():
     logger.info("✅ OpenClaw Voice server ready!")
 
 
+
+# Sentence separators for streaming TTS
+SENTENCE_SEPS = ['. ', '! ', '? ', '.\n', '!\n', '?\n']
+async def speak_sentence(
+    websocket: WebSocket,
+    text: str,
+    seq: int,
+) -> int:
+    """Clean text for speech, synthesize, and stream audio chunks.
+
+    Sends sentence_start, audio_chunks, and sentence_end messages.
+    Returns the next sequence number.
+    """
+    speech_text = clean_for_speech(text)
+    if not speech_text:
+        return seq
+
+    logger.debug(f"Synthesizing: {speech_text[:50]}...")
+    await websocket.send_json({"type": "sentence_start", "seq": seq})
+    try:
+        async for audio_chunk in tts.synthesize_stream(speech_text):
+            audio_b64 = base64.b64encode(audio_chunk).decode()
+            await websocket.send_json({
+                "type": "audio_chunk",
+                "data": audio_b64,
+                "sample_rate": 24000,
+                "seq": seq,
+            })
+    except Exception as tts_err:
+        logger.error(f"TTS error: {tts_err}")
+    await websocket.send_json({"type": "sentence_end", "seq": seq})
+    return seq + 1
+
+
 @app.get("/")
 @app.get("/voice")
 @app.get("/voice/")
@@ -189,8 +223,8 @@ async def health():
         "config": {
             "stt_model": settings.stt_model,
             "tts_model": settings.tts_model,
-            "supertonic_model": settings._supertonic_model if hasattr(settings, '_supertonic_model') else os.getenv("SUPERTONIC_MODEL", "supertonic-2"),
-            "supertonic_voice": settings._supertonic_voice if hasattr(settings, '_supertonic_voice') else os.getenv("SUPERTONIC_VOICE", "F2"),
+            "supertonic_model": os.getenv("SUPERTONIC_MODEL", "supertonic-2"),
+            "supertonic_voice": os.getenv("SUPERTONIC_VOICE", "F2"),
         },
     })
 
@@ -274,6 +308,8 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info(f"WebSocket connected from {client_id}")
 
     audio_buffer = []
+    MAX_AUDIO_BUFFER_SECONDS = 30  # Cap audio buffer at 30s of 16kHz float32
+    MAX_AUDIO_BUFFER_SAMPLES = settings.sample_rate * MAX_AUDIO_BUFFER_SECONDS
     is_listening = False
     session_agent = None
 
@@ -345,9 +381,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 })
 
                                 # Synthesize completed sentences
-                                while any(sep in sentence_buffer for sep in ['. ', '! ', '? ', '.\n', '!\n', '?\n']):
+                                while any(sep in sentence_buffer for sep in SENTENCE_SEPS):
                                     earliest_idx = len(sentence_buffer)
-                                    for sep in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+                                    for sep in SENTENCE_SEPS:
                                         idx = sentence_buffer.find(sep)
                                         if idx != -1 and idx < earliest_idx:
                                             earliest_idx = idx + len(sep)
@@ -357,56 +393,17 @@ async def websocket_endpoint(websocket: WebSocket):
                                         sentence_buffer = sentence_buffer[earliest_idx:]
 
                                         if sentence:
-                                            speech_text = clean_for_speech(sentence)
-                                            if speech_text:
-                                                logger.debug(f"Synthesizing: {speech_text[:50]}...")
-                                                # Mark sentence boundary for gapless scheduling
-                                                await websocket.send_json({
-                                                    "type": "sentence_start",
-                                                    "seq": audio_seq,
-                                                })
-                                                try:
-                                                    async for audio_chunk in tts.synthesize_stream(speech_text):
-                                                        audio_b64 = base64.b64encode(audio_chunk).decode()
-                                                        await websocket.send_json({
-                                                            "type": "audio_chunk",
-                                                            "data": audio_b64,
-                                                            "sample_rate": 24000,
-                                                            "seq": audio_seq,
-                                                        })
-                                                except Exception as tts_err:
-                                                    logger.error(f"TTS error: {tts_err}")
-                                                await websocket.send_json({
-                                                    "type": "sentence_end",
-                                                    "seq": audio_seq,
-                                                })
-                                                audio_seq += 1
+                                            audio_seq = await speak_sentence(
+                                                websocket, sentence, audio_seq
+                                            )
                                     else:
                                         break
 
                             # Handle remaining text
                             if sentence_buffer.strip():
-                                speech_text = clean_for_speech(sentence_buffer.strip())
-                                if speech_text:
-                                    await websocket.send_json({
-                                        "type": "sentence_start",
-                                        "seq": audio_seq,
-                                    })
-                                    try:
-                                        async for audio_chunk in tts.synthesize_stream(speech_text):
-                                            audio_b64 = base64.b64encode(audio_chunk).decode()
-                                            await websocket.send_json({
-                                                "type": "audio_chunk",
-                                                "data": audio_b64,
-                                                "sample_rate": 24000,
-                                                "seq": audio_seq,
-                                            })
-                                    except Exception as tts_err:
-                                        logger.error(f"TTS error (final): {tts_err}")
-                                    await websocket.send_json({
-                                        "type": "sentence_end",
-                                        "seq": audio_seq,
-                                    })
+                                await speak_sentence(
+                                    websocket, sentence_buffer.strip(), audio_seq
+                                )
 
                             await websocket.send_json({
                                 "type": "response_complete",
@@ -428,7 +425,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     audio_bytes = base64.b64decode(msg["data"])
                     audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
-                    audio_buffer.append(audio_np)
+
+                    # Cap audio buffer to prevent unbounded memory growth
+                    total_samples = sum(len(chunk) for chunk in audio_buffer) + len(audio_np)
+                    if total_samples > MAX_AUDIO_BUFFER_SAMPLES:
+                        logger.warning(f"Audio buffer cap reached ({total_samples} samples), forcing stop_listening")
+                        audio_buffer.append(audio_np)
+                        # Trigger processing instead of crashing
+                        is_listening = False
+                        # Fall through to the stop_listening processing below
+                    else:
+                        audio_buffer.append(audio_np)
 
                     if vad and len(audio_np) > 0:
                         has_speech = vad.is_speech(audio_np)

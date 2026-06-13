@@ -52,17 +52,7 @@ class ChatterboxTTS:
                 logger.info("✅ ElevenLabs TTS ready")
                 return
             except ImportError:
-                logger.warning("ElevenLabs SDK not installed, trying pip install...")
-                try:
-                    import subprocess
-                    subprocess.check_call(["pip", "install", "elevenlabs", "-q"])
-                    from elevenlabs import ElevenLabs
-                    self._elevenlabs_client = ElevenLabs(api_key=elevenlabs_key)
-                    self._backend = "elevenlabs"
-                    logger.info("✅ ElevenLabs TTS ready (auto-installed)")
-                    return
-                except Exception as e:
-                    logger.warning(f"ElevenLabs auto-install failed: {e}")
+                logger.warning("ElevenLabs SDK not installed — add 'elevenlabs' to requirements.txt")
             except Exception as e:
                 logger.warning(f"ElevenLabs failed: {e}")
 

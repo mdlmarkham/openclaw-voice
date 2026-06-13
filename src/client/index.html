@@ -852,13 +852,16 @@
         }
         
         function renderMarkdown(text) {
-            return text
+            // Escape HTML first to prevent XSS, then apply markdown transforms.
+            // The AI response is untrusted input — prompt injection could inject HTML.
+            const escaped = escapeHtml(text);
+            return escaped
                 .replace(/```[\s\S]*?```/g, '<code class="block">code</code>')
                 .replace(/`([^`]+)`/g, '<code>$1</code>')
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
                 .replace(/\*([^*]+)\*/g, '<em>$1</em>')
                 .replace(/^#{1,3}\s+(.+)$/gm, '<strong>$1</strong>')
-                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
                 .replace(/\n/g, '<br>');
         }
         

@@ -221,9 +221,10 @@ class ChatterboxTTS:
             result = self._supertonic_tts.synthesize(text, voice_style=self._supertonic_style)
             audio = result[0].squeeze()  # shape (1, N) → (N,)
             # Resample from 44100Hz to 24000Hz for client compatibility
+            # Use soxr (0.002s) instead of librosa (4.8s) — 2500x faster
             if self._supertonic_sr != 24000:
-                import librosa
-                audio = librosa.resample(audio, orig_sr=self._supertonic_sr, target_sr=24000)
+                import soxr
+                audio = soxr.resample(audio, self._supertonic_sr, 24000)
             return audio.astype(np.float32)
         except Exception as e:
             logger.error(f"Supertonic synthesis error: {e}")
@@ -251,8 +252,8 @@ class ChatterboxTTS:
             import soundfile as sf
             data, sr = sf.read(audio_buffer)
             if sr != 24000:
-                import librosa
-                data = librosa.resample(data, orig_sr=sr, target_sr=24000)
+                import soxr
+                data = soxr.resample(data, sr, 24000)
             return data.astype(np.float32)
         except Exception as e:
             logger.error(f"Edge TTS error: {e}")

@@ -1,8 +1,10 @@
 """
-Text-to-Speech module using ElevenLabs, Chatterbox, or fallbacks.
+Text-to-Speech module — Olympus Edition
 
-Olympus optimization: Edge TTS now runs natively async (no more event loop
-errors from running asyncio.run inside ThreadPoolExecutor threads).
+Backend priority: ElevenLabs > Supertonic (local CPU) > Edge TTS (cloud) > Chatterbox > XTTS > mock
+
+Supertonic 3: 99M params, ONNX Runtime, 31 languages, ~1-2x realtime on CPU.
+Edge TTS: Cloud-based, fast, requires network.
 """
 
 import asyncio
@@ -16,7 +18,7 @@ from loguru import logger
 
 
 class ChatterboxTTS:
-    """Text-to-Speech using ElevenLabs, Chatterbox, or fallbacks."""
+    """Text-to-Speech using multiple backends with intelligent fallback."""
 
     def __init__(
         self,
@@ -28,14 +30,19 @@ class ChatterboxTTS:
         self.device = device
         self.voice_id = voice_id or "cgSgspJ2msm6clMCkdW9"  # Jessica
         self._edge_voice = os.environ.get("EDGE_TTS_VOICE", "en-US-JennyNeural")
+        self._supertonic_voice = os.environ.get("SUPERTONIC_VOICE", "F2")
+        self._supertonic_model = os.environ.get("SUPERTONIC_MODEL", "supertonic-2")
         self.model = None
         self._backend = "mock"
         self._elevenlabs_client = None
-        self._loop = None  # Store our own event loop for Edge TTS
+        self._supertonic_tts = None
+        self._supertonic_style = None
+        self._supertonic_sr = 44100  # Supertonic outputs at 44100Hz
         self._load_model()
 
     def _load_model(self):
-        """Load the TTS model."""
+        """Load the TTS model. Priority: ElevenLabs > Supertonic > Edge > Chatterbox > XTTS."""
+        # 1. ElevenLabs (cloud, premium)
         elevenlabs_key = os.environ.get("ELEVENLABS_API_KEY")
         if elevenlabs_key:
             try:
@@ -59,16 +66,39 @@ class ChatterboxTTS:
             except Exception as e:
                 logger.warning(f"ElevenLabs failed: {e}")
 
+        # 2. Supertonic (local CPU, ONNX, fast, 31 languages)
+        try:
+            from supertonic import TTS
+            self._supertonic_tts = TTS(model=self._supertonic_model)
+            self._supertonic_sr = self._supertonic_tts.sample_rate
+            # Load voice style
+            if self._supertonic_voice in self._supertonic_tts.voice_style_names:
+                self._supertonic_style = self._supertonic_tts.get_voice_style(self._supertonic_voice)
+            else:
+                logger.warning(f"Supertonic voice '{self._supertonic_voice}' not found, using first available")
+                self._supertonic_style = self._supertonic_tts.get_voice_style(
+                    self._supertonic_tts.voice_style_names[0]
+                )
+            self._backend = "supertonic"
+            logger.info(f"✅ Supertonic TTS ready (model={self._supertonic_model}, voice={self._supertonic_voice}, sr={self._supertonic_sr}Hz)")
+            return
+        except ImportError:
+            logger.debug("supertonic not installed, skipping")
+        except Exception as e:
+            logger.warning(f"Supertonic failed: {e}")
+
+        # 3. Edge TTS (cloud, free, fast)
         try:
             import edge_tts  # noqa: F401
             self._backend = "edge"
-            logger.info("✅ Edge TTS ready (Microsoft, free, no API key)")
+            logger.info("✅ Edge TTS ready (Microsoft, free, cloud)")
             return
         except ImportError:
             logger.warning("edge-tts not installed")
         except Exception as e:
             logger.warning(f"Edge TTS check failed: {e}")
 
+        # 4. Chatterbox (GPU local)
         try:
             from chatterbox.tts import ChatterboxTTS as CBModel
             logger.info("Loading Chatterbox TTS...")
@@ -81,6 +111,7 @@ class ChatterboxTTS:
         except Exception as e:
             logger.warning(f"Chatterbox failed: {e}")
 
+        # 5. XTTS (GPU local)
         try:
             from TTS.api import TTS
             logger.info("Loading Coqui XTTS...")
@@ -109,9 +140,21 @@ class ChatterboxTTS:
             pass
         return "cpu"
 
+    @property
+    def sample_rate(self) -> int:
+        """Output sample rate for the current backend."""
+        if self._backend == "supertonic":
+            return self._supertonic_sr
+        elif self._backend == "elevenlabs":
+            return 24000
+        else:
+            return 24000  # Edge TTS and others output at 24kHz
+
     async def synthesize(self, text: str) -> np.ndarray:
-        """Synthesize speech from text. Returns float32 numpy array at 24kHz."""
-        if self._backend == "edge":
+        """Synthesize speech from text. Returns float32 numpy array at native sample rate."""
+        if self._backend == "supertonic":
+            return await self._synthesize_supertonic(text)
+        elif self._backend == "edge":
             return await self._synthesize_edge(text)
         elif self._backend == "elevenlabs":
             return await self._synthesize_elevenlabs(text)
@@ -126,7 +169,7 @@ class ChatterboxTTS:
         Stream synthesized audio chunks.
 
         Yields:
-            Raw PCM audio chunks (24kHz, 16-bit signed integer)
+            Raw PCM audio chunks (int16 at native sample rate)
         """
         if self._backend == "elevenlabs":
             try:
@@ -140,8 +183,20 @@ class ChatterboxTTS:
                     yield chunk
             except Exception as e:
                 logger.error(f"ElevenLabs streaming error: {e}")
+
+        elif self._backend == "supertonic":
+            # Supertonic is synchronous but fast (~1-2x realtime on CPU)
+            try:
+                loop = asyncio.get_event_loop()
+                audio_float32 = await loop.run_in_executor(None, self._synthesize_supertonic_sync, text)
+                if audio_float32 is not None and len(audio_float32) > 0:
+                    audio_int16 = (audio_float32 * 32768.0).clip(-32768, 32767).astype(np.int16)
+                    yield audio_int16.tobytes()
+            except Exception as e:
+                logger.error(f"Supertonic TTS error: {e}")
+
         elif self._backend == "edge":
-            # Edge TTS produces MP3 — decode to PCM on server, send int16 bytes
+            # Edge TTS: collect MP3, decode to PCM, send as int16
             try:
                 audio_float32 = await self._synthesize_edge(text)
                 if audio_float32 is not None and len(audio_float32) > 0:
@@ -149,36 +204,50 @@ class ChatterboxTTS:
                     yield audio_int16.tobytes()
             except Exception as e:
                 logger.error(f"Edge TTS streaming error: {e}")
+
         else:
             # Fallback: synthesize then yield as one chunk
             try:
                 audio = await self.synthesize(text)
                 if audio is not None and len(audio) > 0:
-                    # Convert float32 to int16 PCM bytes
-                    audio_int16 = (audio * 32768.0).astype(np.int16)
+                    audio_int16 = (audio * 32768.0).clip(-32768, 32767).astype(np.int16)
                     yield audio_int16.tobytes()
             except Exception as e:
                 logger.error(f"TTS fallback error: {e}")
 
-    async def _synthesize_edge(self, text: str) -> np.ndarray:
-        """Edge TTS — fully async, no event loop hacks.
+    def _synthesize_supertonic_sync(self, text: str) -> np.ndarray:
+        """Synchronous Supertonic synthesis (runs in executor)."""
+        try:
+            result = self._supertonic_tts.synthesize(text, voice_style=self._supertonic_style)
+            audio = result[0].squeeze()  # shape (1, N) → (N,)
+            # Resample from 44100Hz to 24000Hz for client compatibility
+            if self._supertonic_sr != 24000:
+                import librosa
+                audio = librosa.resample(audio, orig_sr=self._supertonic_sr, target_sr=24000)
+            return audio.astype(np.float32)
+        except Exception as e:
+            logger.error(f"Supertonic synthesis error: {e}")
+            return np.zeros(12000, dtype=np.float32)
 
-        Collects MP3 chunks from edge_tts stream, decodes to float32 PCM at 24kHz.
-        """
+    async def _synthesize_supertonic(self, text: str) -> np.ndarray:
+        """Supertonic synthesis via executor."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._synthesize_supertonic_sync, text)
+
+    async def _synthesize_edge(self, text: str) -> np.ndarray:
+        """Edge TTS — fully async, collect MP3 chunks and decode."""
         try:
             import edge_tts
 
             voice = self._edge_voice or "en-US-JennyNeural"
             communicate = edge_tts.Communicate(text, voice)
 
-            # Collect MP3 audio chunks into a buffer
             audio_buffer = io.BytesIO()
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     audio_buffer.write(chunk["data"])
             audio_buffer.seek(0)
 
-            # Decode MP3 to float32 PCM
             import soundfile as sf
             data, sr = sf.read(audio_buffer)
             if sr != 24000:

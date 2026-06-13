@@ -7,6 +7,8 @@ from typing import Optional, List, Dict, AsyncGenerator
 
 from loguru import logger
 
+from .constants import SYSTEM_PROMPT
+
 
 class AIBackend:
     """AI backend for processing user messages."""
@@ -23,12 +25,7 @@ class AIBackend:
         self.url = url
         self.model = model
         self.api_key = api_key
-        self.system_prompt = system_prompt or (
-            "You are Métis, a wisdom companion speaking through a voice interface. "
-            "Keep responses concise and conversational — under 50 words unless more detail is needed. "
-            "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-            "Be warm, direct, and associative. Connect ideas. Ask probing questions."
-        )
+        self.system_prompt = system_prompt or SYSTEM_PROMPT
         self.conversation_history: List[Dict] = []
         self._client = None
         self._setup_client()

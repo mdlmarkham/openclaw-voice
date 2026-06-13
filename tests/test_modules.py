@@ -80,7 +80,7 @@ class TestAIBackend:
         """Test default system prompt is set."""
         backend = AIBackend()
         assert backend.system_prompt is not None
-        assert "voice assistant" in backend.system_prompt.lower()
+        assert "wisdom companion" in backend.system_prompt.lower()
     
     def test_clear_history(self):
         """Test conversation history can be cleared."""

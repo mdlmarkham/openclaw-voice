@@ -31,6 +31,7 @@ from .backend import AIBackend
 from .vad import VoiceActivityDetector
 from .auth import token_manager, load_keys_from_env, APIKey
 from .text_utils import clean_for_speech
+from .constants import SYSTEM_PROMPT
 
 
 class Settings(BaseSettings):
@@ -66,12 +67,7 @@ class Settings(BaseSettings):
     sample_rate: int = 16000
 
     # System prompt for voice mode — keep it short and conversational
-    system_prompt: str = (
-        "You are Métis, a wisdom companion speaking through a voice interface. "
-        "Keep responses concise and conversational — under 50 words unless more detail is needed. "
-        "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
-        "Be warm, direct, and associative. Connect ideas. Ask probing questions."
-    )
+    system_prompt: str = SYSTEM_PROMPT
 
     class Config:
         env_prefix = "OPENCLAW_"
@@ -116,13 +112,26 @@ async def startup():
 
     logger.info(f"Loading STT model: {settings.stt_model}")
     stt = WhisperSTT(model_name=settings.stt_model, device=settings.stt_device)
+    if stt._backend == "mock":
+        logger.warning("⚠️ STT is in MOCK mode — install faster-whisper or openai-whisper for real speech recognition")
 
     logger.info(f"Loading TTS model: {settings.tts_model}")
     tts = ChatterboxTTS(voice_sample=settings.tts_voice)
+    if tts._backend == "mock":
+        logger.error("❌ No TTS backend available — set ELEVENLABS_API_KEY or install a local TTS backend")
+    elif tts._backend == "elevenlabs":
+        pass
+    else:
+        logger.warning(f"⚠️ TTS using fallback backend: {tts._backend}")
 
     # Auto-detect OpenClaw gateway
     gateway_url = settings.openclaw_gateway_url or os.getenv("OPENCLAW_GATEWAY_URL")
     gateway_token = settings.openclaw_gateway_token or os.getenv("OPENCLAW_GATEWAY_TOKEN")
+    openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+    backend_configured = bool(gateway_url and gateway_token) or bool(openai_key)
+
+    if not backend_configured:
+        logger.error("❌ No AI backend configured — set OPENAI_API_KEY or OPENCLAW_GATEWAY_URL+OPENCLAW_GATEWAY_TOKEN")
 
     if gateway_url and gateway_token:
         logger.info(f"🦞 Connecting to OpenClaw gateway: {gateway_url}")
@@ -139,7 +148,7 @@ async def startup():
             backend_type=settings.backend_type,
             url=settings.backend_url,
             model=settings.backend_model,
-            api_key=settings.openai_api_key or os.getenv("OPENAI_API_KEY"),
+            api_key=openai_key,
             system_prompt=settings.system_prompt,
         )
 

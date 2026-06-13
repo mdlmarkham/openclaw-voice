@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "openclaw_voice",
+  "project_id": "33b98043-bf67-49e3-bf3f-8dde4b9b8766"
+}

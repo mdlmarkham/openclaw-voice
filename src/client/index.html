@@ -96,6 +96,10 @@
             flex-direction: column;
             margin: 0 auto 10px;
             position: relative;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            user-select: none;
+            -webkit-user-select: none;
         }
         
         .voice-button:hover {
@@ -367,30 +371,80 @@
         @media (max-width: 480px) {
             .container {
                 padding: 10px;
+                padding: 10px env(safe-area-inset-right, 10px) 10px env(safe-area-inset-left, 10px);
+            }
+            body {
+                padding: env(safe-area-inset-top, 20px) 0 env(safe-area-inset-bottom, 20px) 0;
             }
             h1 {
-                font-size: 1.8rem;
+                font-size: 1.5rem;
             }
             .voice-button {
-                width: 120px;
-                height: 120px;
+                width: 130px;
+                height: 130px;
                 font-size: 1rem;
+                touch-action: manipulation;
             }
             .waveform-container {
                 width: 160px;
                 height: 32px;
             }
             .transcript-box {
-                max-height: 280px;
+                max-height: 35vh;
                 font-size: 0.9rem;
             }
             .config-panel {
                 font-size: 0.65rem;
-                gap: 10px;
+                gap: 6px;
+                flex-direction: column;
+                align-items: center;
+            }
+            .agent-selector {
+                flex-direction: column;
+                gap: 6px;
+            }
+            .agent-selector select {
+                min-width: 200px;
+            }
+            .continuous-toggle {
+                gap: 8px;
             }
             .instructions {
                 display: none;
             }
+        }
+
+        /* Landscape mobile */
+        @media (max-width: 768px) and (orientation: landscape) {
+            .voice-button {
+                width: 90px;
+                height: 90px;
+                font-size: 0.85rem;
+            }
+            .container {
+                max-width: 100%;
+                padding: 5px env(safe-area-inset-right, 5px);
+            }
+            h1 {
+                font-size: 1.2rem;
+                margin-bottom: 5px;
+            }
+            .transcript-box {
+                max-height: 25vh;
+            }
+            .waveform-container {
+                width: 120px;
+                height: 24px;
+            }
+        }
+
+        /* Audio playback visual feedback */
+        .voice-button.playing {
+            animation: playGlow 1s ease-in-out infinite alternate;
+        }
+        @keyframes playGlow {
+            from { box-shadow: 0 0 20px rgba(79, 195, 247, 0.3); }
+            to { box-shadow: 0 0 40px rgba(79, 195, 247, 0.6); }
         }
     </style>
 </head>
@@ -706,7 +760,7 @@
                     currentResponseElement = null;
                     cancelAllAudio();
                     nextStartTime = 0;
-                    isPlaying = true;
+                    setPlayingState(true);
                     // Barge-in: start recording immediately during playback
                     // so user can interrupt the AI response
                     if (continuousMode && !userStoppedRecording && !isRecording) {
@@ -858,29 +912,31 @@
         let isPlaying = false;  // Track whether AI audio is still playing
         let scheduledSources = [];  // Track scheduled BufferSource nodes for cancellation
 
+        function setPlayingState(playing) {
+            isPlaying = playing;
+            voiceBtn.classList.toggle('playing', playing);
+        }
+
         function cancelAllAudio() {
-            // Stop all scheduled audio playback immediately
             scheduledSources.forEach(src => {
-                try { src.stop(); } catch(e) { /* already ended */ }
+                try { src.stop(); } catch(e) { }
             });
             scheduledSources = [];
-            isPlaying = false;
+            setPlayingState(false);
             nextStartTime = 0;
             if (completionTimer) clearTimeout(completionTimer);
             completionTimer = null;
         }
 
         function scheduleAudioCompletion(responseText) {
-            // Calculate when the last chunk will finish playing
-            // and set a timer to trigger continuous mode or ready state
             const ctx = getAudioCtx();
             const timeUntilDone = Math.max(0, (nextStartTime - ctx.currentTime) * 1000);
 
-            isPlaying = true;
+            setPlayingState(true);
 
             if (completionTimer) clearTimeout(completionTimer);
             completionTimer = setTimeout(() => {
-                isPlaying = false;
+                setPlayingState(false);
                 if (isRecording) {
                     // Barge-in: already recording, don't re-start
                 } else if (continuousMode && !userStoppedRecording) {

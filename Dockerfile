@@ -1,71 +1,78 @@
-# OpenClaw Voice - GPU-enabled Docker image
-# Supports NVIDIA GPUs for fast Whisper + TTS inference
+# OpenClaw Voice — production Docker image
+#
+# Supports NVIDIA GPUs for fast Whisper + TTS inference.
+# Multi-stage build keeps the final image lean.
+#
+# Build:
+#   docker build -t openclaw-voice .
+#
+# Run (CPU):
+#   docker run -p 8765:8765 openclaw-voice
+#
+# Run (GPU):
+#   docker run --gpus all -p 8765:8765 openclaw-voice
+#
+# Mount volumes for persistent models and voice samples:
+#   docker run -v models:/app/models -v voices:/app/voices ... openclaw-voice
 
-FROM nvidia/cuda:12.1-cudnn8-runtime-ubuntu22.04
+# ── Build stage ──────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
 
-# Prevent interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libsndfile1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+RUN pip install --no-cache-dir -e ".[stt]" && \
+    pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# ── Runtime stage ────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+# System deps for audio processing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libsndfile1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for security
+RUN groupadd -r openclaw && useradd -r -g openclaw -d /app -s /sbin/nologin openclaw
+
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages/ /usr/local/lib/python3.11/site-packages/
+COPY --from=builder /usr/local/bin/ /usr/local/bin/
+COPY --from=builder /app/src/ ./src/
+
+# Directories for mounted volumes
+RUN mkdir -p /app/models /app/voices && chown -R openclaw:openclaw /app
+
+USER openclaw
 
 ARG STT_MODEL=large-v3-turbo
 
-# Install Python and dependencies
-RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3.11-venv \
-    python3-pip \
-    ffmpeg \
-    libsndfile1 \
-    git \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set Python 3.11 as default
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
-
-# Create app directory
-WORKDIR /app
-
-# Install uv for fast package management
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
-
-# Copy requirements first for caching
-COPY requirements.txt pyproject.toml ./
-
-# Create venv and install dependencies
-RUN uv venv && \
-    . .venv/bin/activate && \
-    uv pip install -e ".[stt]" && \
-    uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Copy application code
-COPY src/ ./src/
-COPY .env.example ./.env.example
-
-# Create directories for models
-RUN mkdir -p /app/models /app/voices
-
-# Pre-download STT model for faster container startup
-RUN . .venv/bin/activate && python -c "
+# Pre-download STT model during build
+RUN python -c "
 from faster_whisper import WhisperModel
 WhisperModel('${STT_MODEL}', device='cpu', compute_type='int8')
-print(f'✅ STT model ${STT_MODEL} cached')
+print(f'✅ STT model {STT_MODEL} cached')
 "
 
-# Environment variables
+# Environment
 ENV OPENCLAW_HOST=0.0.0.0
 ENV OPENCLAW_PORT=8765
 ENV OPENCLAW_STT_MODEL=large-v3-turbo
 ENV OPENCLAW_STT_DEVICE=cuda
 ENV OPENCLAW_REQUIRE_AUTH=true
+ENV PYTHONUNBUFFERED=1
 
-# Expose port
 EXPOSE 8765
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8765/health || exit 1
+    CMD curl -sf http://localhost:8765/health || exit 1
 
-# Run server
-CMD [".venv/bin/python", "-m", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["python", "-m", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8765"]

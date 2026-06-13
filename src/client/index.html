@@ -312,6 +312,37 @@
         .conn-indicator.ok { background: #4caf50; }
         .conn-indicator.warn { background: #ff9800; }
         .conn-indicator.err { background: #f44336; }
+        
+        .config-panel {
+            margin-top: 10px;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 0.75rem;
+            color: #666;
+            text-align: left;
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .config-panel .config-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .config-panel .config-label {
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-size: 0.65rem;
+        }
+        .config-panel .config-value {
+            color: #c9a227;
+            font-weight: 600;
+        }
+        .config-panel .config-ok { color: #4caf50; }
+        .config-panel .config-warn { color: #ff9800; }
     </style>
 </head>
 <body>
@@ -345,6 +376,14 @@
         </div>
         
         <p class="status" id="status"><span class="conn-indicator warn" id="connDot"></span>Connecting...</p>
+        
+        <div class="config-panel" id="configPanel">
+            <div class="config-item"><span class="config-label">STT:</span> <span class="config-value" id="cfgStt">—</span></div>
+            <div class="config-item"><span class="config-label">TTS:</span> <span class="config-value" id="cfgTts">—</span></div>
+            <div class="config-item"><span class="config-label">Voice:</span> <span class="config-value" id="cfgVoice">—</span></div>
+            <div class="config-item"><span class="config-label">Backend:</span> <span class="config-value" id="cfgBackend">—</span></div>
+            <div class="config-item"><span class="config-label">Uptime:</span> <span class="config-value" id="cfgUptime">—</span></div>
+        </div>
         
         <div class="transcript-box">
             <h3>Conversation</h3>
@@ -855,8 +894,41 @@
             }
         });
         
+        // ── Health check & config display ─────────────────────
+        async function fetchConfig() {
+            try {
+                const proto = window.location.protocol === 'https:' ? 'https:' : 'http:';
+                const resp = await fetch(`${proto}//${window.location.host}/health`, { signal: AbortSignal.timeout(3000) });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const cfg = data.tts_detail || {};
+                    document.getElementById('cfgStt').textContent = data.stt || '—';
+                    document.getElementById('cfgTts').textContent = cfg.backend || data.tts || '—';
+                    document.getElementById('cfgVoice').textContent = cfg.voice || cfg.edge_voice || '—';
+                    document.getElementById('cfgBackend').textContent = data.backend || '—';
+                    
+                    // Show model version for Supertonic
+                    if (cfg.backend === 'supertonic' && cfg.model) {
+                        document.getElementById('cfgTts').textContent = `supertonic (${cfg.model})`;
+                        document.getElementById('cfgVoice').textContent = `${cfg.voice} @ ${cfg.sample_rate}Hz`;
+                    }
+                    
+                    // Uptime
+                    const up = data.uptime_seconds || 0;
+                    const mins = Math.floor(up / 60);
+                    const hrs = Math.floor(mins / 60);
+                    document.getElementById('cfgUptime').textContent = hrs > 0 ? `${hrs}h ${mins % 60}m` : `${mins}m`;
+                }
+            } catch (e) {
+                // Config fetch failed — non-critical
+            }
+        }
+        
         // ── Connect on load ──────────────────────────────────────
         connect();
+        fetchConfig();
+        // Refresh config every 60s
+        setInterval(fetchConfig, 60000);
         
         // Keep connection alive with ping
         setInterval(() => {

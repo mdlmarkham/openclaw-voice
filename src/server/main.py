@@ -165,8 +165,21 @@ async def health():
         "uptime_seconds": round(time.time() - _startup_time, 1) if _startup_time else 0,
         "stt": stt._backend if stt else "not_loaded",
         "tts": tts._backend if tts else "not_loaded",
+        "tts_detail": {
+            "backend": tts._backend if tts else "not_loaded",
+            "model": tts._supertonic_model if tts and tts._backend == "supertonic" else None,
+            "voice": tts._supertonic_voice if tts and tts._backend == "supertonic" else None,
+            "sample_rate": tts._supertonic_sr if tts and tts._backend == "supertonic" else (24000 if tts else 0),
+            "edge_voice": tts._edge_voice if tts and tts._backend == "edge" else None,
+        },
         "backend": backend.backend_type if backend else "not_loaded",
         "vad": "loaded" if vad else "not_loaded",
+        "config": {
+            "stt_model": settings.stt_model,
+            "tts_model": settings.tts_model,
+            "supertonic_model": settings._supertonic_model if hasattr(settings, '_supertonic_model') else os.getenv("SUPERTONIC_MODEL", "supertonic-2"),
+            "supertonic_voice": settings._supertonic_voice if hasattr(settings, '_supertonic_voice') else os.getenv("SUPERTONIC_VOICE", "F2"),
+        },
     })
 
 

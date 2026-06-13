@@ -66,7 +66,8 @@ export function VoiceWidget({
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  const captureCtxRef = useRef<AudioContext | null>(null);
+  const playbackCtxRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
@@ -117,10 +118,19 @@ export function VoiceWidget({
     nextStartTimeRef.current = 0;
   }, []);
 
+  const getPlaybackCtx = useCallback(() => {
+    if (!playbackCtxRef.current || playbackCtxRef.current.state === 'closed') {
+      playbackCtxRef.current = new AudioContext({ sampleRate: 24000 });
+    }
+    if (playbackCtxRef.current.state === 'suspended') {
+      playbackCtxRef.current.resume();
+    }
+    return playbackCtxRef.current;
+  }, []);
+
   const scheduleAudio = useCallback((base64Data: string, sampleRate: number) => {
     try {
-      const ctx = audioCtxRef.current;
-      if (!ctx) return;
+      const ctx = getPlaybackCtx();
       const float32 = decodePcm(base64Data);
 
       let audioData = float32;
@@ -159,7 +169,7 @@ export function VoiceWidget({
     } catch (e) {
       console.error('Audio scheduling error:', e);
     }
-  }, []);
+  }, [getPlaybackCtx]);
 
   const handleMessage = useCallback((msg: any) => {
     switch (msg.type) {
@@ -202,10 +212,10 @@ export function VoiceWidget({
       });
 
       mediaStreamRef.current = stream;
-      audioCtxRef.current = new AudioContext({ sampleRate: 16000 });
+      captureCtxRef.current = new AudioContext({ sampleRate: 16000 });
 
-      const source = audioCtxRef.current.createMediaStreamSource(stream);
-      const processor = audioCtxRef.current.createScriptProcessor(4096, 1, 1);
+      const source = captureCtxRef.current.createMediaStreamSource(stream);
+      const processor = captureCtxRef.current.createScriptProcessor(4096, 1, 1);
 
       processor.onaudioprocess = (e: AudioProcessingEvent) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -215,7 +225,7 @@ export function VoiceWidget({
       };
 
       source.connect(processor);
-      processor.connect(audioCtxRef.current.destination);
+      processor.connect(captureCtxRef.current.destination);
       processorRef.current = processor;
 
       wsRef.current.send(JSON.stringify({ type: 'start_listening' }));
@@ -230,9 +240,9 @@ export function VoiceWidget({
       processorRef.current.disconnect();
       processorRef.current = null;
     }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close();
-      audioCtxRef.current = null;
+    if (captureCtxRef.current) {
+      captureCtxRef.current.close();
+      captureCtxRef.current = null;
     }
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(t => t.stop());

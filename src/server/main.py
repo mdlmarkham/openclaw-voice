@@ -319,6 +319,99 @@ async def websocket_endpoint(websocket: WebSocket):
     is_listening = False
     session_agent = None
 
+    async def process_buffer():
+        """Transcribe buffered audio, stream AI response, and send TTS audio."""
+        nonlocal audio_buffer, is_listening, session_agent
+        is_listening = False
+        t_start = time.monotonic()
+
+        if audio_buffer:
+            try:
+                audio_data = np.concatenate(audio_buffer)
+                audio_duration = len(audio_data) / settings.sample_rate
+                logger.info(f"Audio received: {audio_duration:.1f}s, {len(audio_buffer)} chunks")
+
+                t_stt_start = time.monotonic()
+                logger.debug("Transcribing audio...")
+                transcript = await stt.transcribe(audio_data)
+                t_stt = time.monotonic() - t_stt_start
+
+                await websocket.send_json({"type": "transcript", "text": transcript, "final": True})
+                logger.info(f"STT: {t_stt:.2f}s | Transcript: {transcript[:80]}")
+
+                if transcript.strip():
+                    logger.debug("Streaming AI response...")
+                    full_response = ""
+                    sentence_buffer = ""
+                    agent_model = f"openclaw/{session_agent}" if session_agent else None
+                    audio_seq = 0
+                    t_llm_start = time.monotonic()
+                    t_first_token = None
+                    t_first_audio = None
+                    sentence_count = 0
+
+                    async for chunk in backend.chat_stream(transcript, model=agent_model):
+                        full_response += chunk
+                        sentence_buffer += chunk
+                        if t_first_token is None:
+                            t_first_token = time.monotonic() - t_llm_start
+                        await websocket.send_json({"type": "response_chunk", "text": chunk})
+
+                        while any(sep in sentence_buffer for sep in SENTENCE_SEPS):
+                            earliest_idx = len(sentence_buffer)
+                            for sep in SENTENCE_SEPS:
+                                idx = sentence_buffer.find(sep)
+                                if idx != -1 and idx < earliest_idx:
+                                    earliest_idx = idx + len(sep)
+                            if earliest_idx < len(sentence_buffer):
+                                sentence = sentence_buffer[:earliest_idx].strip()
+                                sentence_buffer = sentence_buffer[earliest_idx:]
+                                if sentence:
+                                    t_tts_start = time.monotonic()
+                                    audio_seq = await speak_sentence(websocket, sentence, audio_seq)
+                                    tts_time = time.monotonic() - t_tts_start
+                                    sentence_count += 1
+                                    if t_first_audio is None:
+                                        t_first_audio = time.monotonic() - t_start
+                                        logger.info(
+                                            f"First audio: {t_first_audio:.2f}s "
+                                            f"(STT={t_stt:.2f}s, first_token={t_first_token:.2f}s, "
+                                            f"TTS_1st={tts_time:.2f}s)"
+                                        )
+                            else:
+                                break
+
+                    if sentence_buffer.strip():
+                        t_tts_start = time.monotonic()
+                        await speak_sentence(websocket, sentence_buffer.strip(), audio_seq)
+                        sentence_count += 1
+
+                    t_total = time.monotonic() - t_start
+                    t_llm_total = time.monotonic() - t_llm_start
+                    await websocket.send_json({
+                        "type": "response_complete",
+                        "text": full_response,
+                        "latency": {
+                            "stt_ms": round(t_stt * 1000),
+                            "first_token_ms": round(t_first_token * 1000) if t_first_token else None,
+                            "first_audio_ms": round(t_first_audio * 1000) if t_first_audio else None,
+                            "llm_total_ms": round(t_llm_total * 1000),
+                            "total_ms": round(t_total * 1000),
+                            "audio_duration_s": round(audio_duration, 1),
+                            "sentences": sentence_count,
+                        },
+                    })
+                    logger.info(
+                        f"Response complete: {t_total:.2f}s total, "
+                        f"{full_response[:80]}..."
+                    )
+            except Exception as inner_err:
+                logger.error(f"Processing error: {inner_err}")
+                await websocket.send_json({"type": "error", "message": str(inner_err)})
+
+        audio_buffer = []
+        await websocket.send_json({"type": "listening_stopped"})
+
     try:
         while True:
             try:
@@ -361,146 +454,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"type": "listening_started"})
 
             elif msg_type == "stop_listening":
-                is_listening = False
-                t_start = time.monotonic()  # Pipeline timing start
-
-                if audio_buffer:
-                    try:
-                        audio_data = np.concatenate(audio_buffer)
-                        audio_duration = len(audio_data) / settings.sample_rate
-                        logger.info(
-                            f"Audio received: {audio_duration:.1f}s, {len(audio_buffer)} chunks"
-                        )
-
-                        t_stt_start = time.monotonic()
-                        logger.debug("Transcribing audio...")
-                        transcript = await stt.transcribe(audio_data)
-                        t_stt = time.monotonic() - t_stt_start
-
-                        await websocket.send_json(
-                            {
-                                "type": "transcript",
-                                "text": transcript,
-                                "final": True,
-                            }
-                        )
-                        logger.info(f"STT: {t_stt:.2f}s | Transcript: {transcript[:80]}")
-
-                        if transcript.strip():
-                            logger.debug("Streaming AI response...")
-                            full_response = ""
-                            sentence_buffer = ""
-                            agent_model = f"openclaw/{session_agent}" if session_agent else None
-
-                            audio_seq = 0  # Sequence counter for ordered playback
-                            t_llm_start = time.monotonic()
-                            t_first_token = None
-                            t_first_audio = None
-                            sentence_count = 0
-
-                            async for chunk in backend.chat_stream(transcript, model=agent_model):
-                                full_response += chunk
-                                sentence_buffer += chunk
-
-                                if t_first_token is None:
-                                    t_first_token = time.monotonic() - t_llm_start
-
-                                await websocket.send_json(
-                                    {
-                                        "type": "response_chunk",
-                                        "text": chunk,
-                                    }
-                                )
-
-                                # Synthesize completed sentences
-                                while any(sep in sentence_buffer for sep in SENTENCE_SEPS):
-                                    earliest_idx = len(sentence_buffer)
-                                    for sep in SENTENCE_SEPS:
-                                        idx = sentence_buffer.find(sep)
-                                        if idx != -1 and idx < earliest_idx:
-                                            earliest_idx = idx + len(sep)
-
-                                    if earliest_idx < len(sentence_buffer):
-                                        sentence = sentence_buffer[:earliest_idx].strip()
-                                        sentence_buffer = sentence_buffer[earliest_idx:]
-
-                                        if sentence:
-                                            t_tts_start = time.monotonic()
-                                            audio_seq = await speak_sentence(
-                                                websocket, sentence, audio_seq
-                                            )
-                                            tts_time = time.monotonic() - t_tts_start
-                                            sentence_count += 1
-                                            if t_first_audio is None:
-                                                t_first_audio = time.monotonic() - t_start
-                                                logger.info(
-                                                    f"First audio: {t_first_audio:.2f}s (STT={t_stt:.2f}s, first_token={t_first_token:.2f}s, TTS_1st={tts_time:.2f}s)"
-                                                )
-                                    else:
-                                        break
-
-                            # Handle remaining text
-                            if sentence_buffer.strip():
-                                t_tts_start = time.monotonic()
-                                await speak_sentence(websocket, sentence_buffer.strip(), audio_seq)
-                                sentence_count += 1
-
-                            t_total = time.monotonic() - t_start
-                            t_llm_total = time.monotonic() - t_llm_start
-                            await websocket.send_json(
-                                {
-                                    "type": "response_complete",
-                                    "text": full_response,
-                                    "latency": {
-                                        "stt_ms": round(t_stt * 1000),
-                                        "first_token_ms": round(t_first_token * 1000)
-                                        if t_first_token
-                                        else None,
-                                        "first_audio_ms": round(t_first_audio * 1000)
-                                        if t_first_audio
-                                        else None,
-                                        "llm_total_ms": round(t_llm_total * 1000),
-                                        "total_ms": round(t_total * 1000),
-                                        "audio_duration_s": round(audio_duration, 1),
-                                        "sentences": sentence_count,
-                                    },
-                                }
-                            )
-                            logger.info(
-                                f"Pipeline: {t_total:.2f}s total "
-                                f"(STT={t_stt:.2f}s, LLM={t_llm_total:.2f}s, "
-                                f"first_token={t_first_token:.2f}s, "
-                                f"first_audio={t_first_audio:.2f}s) "
-                                f"| {sentence_count} sentences | {len(full_response)} chars"
-                            )
-
-                    except Exception as inner_err:
-                        logger.error(f"Processing error: {inner_err}")
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "message": str(inner_err),
-                            }
-                        )
-
-                audio_buffer = []
-                await websocket.send_json({"type": "listening_stopped"})
+                await process_buffer()
 
             elif msg_type == "audio" and is_listening:
                 try:
                     audio_bytes = base64.b64decode(msg["data"])
                     audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
 
-                    # Cap audio buffer to prevent unbounded memory growth
                     total_samples = sum(len(chunk) for chunk in audio_buffer) + len(audio_np)
                     if total_samples > MAX_AUDIO_BUFFER_SAMPLES:
                         logger.warning(
-                            f"Audio buffer cap reached ({total_samples} samples), forcing stop_listening"
+                            f"Audio buffer cap reached ({total_samples} samples), processing"
                         )
                         audio_buffer.append(audio_np)
-                        # Trigger processing instead of crashing
-                        is_listening = False
-                        # Fall through to the stop_listening processing below
+                        await process_buffer()
                     else:
                         audio_buffer.append(audio_np)
 

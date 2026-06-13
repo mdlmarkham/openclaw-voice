@@ -120,26 +120,21 @@ class TokenManager:
 
     def check_rate_limit(self, api_key: APIKey) -> bool:
         """
-        Check if request is within rate limits.
+        Check if request is within rate limits using a fixed window.
 
         Returns True if allowed, False if rate limited.
         """
         now = datetime.now(tz=None)
+        window_start = getattr(api_key, '_window_start', None)
 
-        # Reset counter if new minute
-        if api_key.last_request_at:
-            elapsed = (now - api_key.last_request_at).total_seconds()
-            if elapsed >= 60:
-                api_key.request_count_this_minute = 0
+        if window_start is None or (now - window_start).total_seconds() >= 60:
+            api_key._window_start = now
+            api_key.request_count_this_minute = 0
 
-        # Check rate limit
         if api_key.request_count_this_minute >= api_key.rate_limit_per_minute:
             return False
 
-        # Update counters
         api_key.request_count_this_minute += 1
-        api_key.last_request_at = now
-
         return True
 
     def check_monthly_quota(self, api_key: APIKey, minutes: float = 0) -> bool:

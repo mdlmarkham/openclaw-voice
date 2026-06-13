@@ -863,6 +863,13 @@
             return div.innerHTML;
         }
 
+        function safeUrl(url) {
+            try {
+                const u = new URL(url, window.location.origin);
+                return ['http:', 'https:', 'mailto:'].includes(u.protocol) ? u.href : '#';
+            } catch { return '#'; }
+        }
+
         function renderMarkdown(text) {
             // Escape HTML first to prevent XSS, then apply markdown transforms.
             // The AI response is untrusted input — prompt injection could inject HTML.
@@ -873,7 +880,7 @@
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
                 .replace(/\*([^*]+)\*/g, '<em>$1</em>')
                 .replace(/^#{1,3}\s+(.+)$/gm, '<strong>$1</strong>')
-                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => `<a href="${safeUrl(url)}" target="_blank" rel="noopener">${text}</a>`)
                 .replace(/\n/g, '<br>');
         }
 

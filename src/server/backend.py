@@ -66,6 +66,8 @@ class AIBackend:
                 logger.info(f"✅ OpenAI client ready (model: {self.model})")
             except ImportError:
                 logger.error("openai package not installed")
+            except Exception as e:
+                logger.warning(f"OpenAI client failed ({e}), using echo fallback")
         elif self.backend_type == "openclaw":
             # OpenClaw gateway uses OpenAI-compatible API
             # Route to the metis agent via model field
@@ -83,6 +85,8 @@ class AIBackend:
                 logger.info(f"✅ OpenClaw gateway client ready (url: {self.url}, agent: metis)")
             except ImportError:
                 logger.error("openai package not installed")
+            except Exception as e:
+                logger.warning(f"Gateway client failed ({e}), using echo fallback")
         else:
             logger.warning(f"Unknown backend type: {self.backend_type}")
 

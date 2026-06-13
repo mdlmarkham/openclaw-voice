@@ -212,7 +212,7 @@ async def speak_sentence(
             await websocket.send_json({
                 "type": "audio_chunk",
                 "data": audio_b64,
-                "sample_rate": tts.sample_rate if tts else 24000,
+                "sample_rate": 24000,
                 "seq": seq,
             })
     except Exception as tts_err:

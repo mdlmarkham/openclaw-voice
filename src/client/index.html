@@ -651,28 +651,20 @@
         
         // ── Persistent AudioContext + gapless scheduled playback ──
         let persistentCtx = null;   // Single AudioContext, never recreated
-        let persistentCtxSampleRate = null;  // Sample rate from server
         let nextStartTime = 0;      // Scheduled end of last-queued audio
         let audioQueuing = false;   // True while we're queuing chunks for a response
         let currentResponseElement = null;
         let streamingText = '';
         let responseSeq = 0;       // Tracks sentence sequence for ordering
 
-        function getAudioCtx(serverSampleRate) {
-            // Use server's sample rate (44100 for Supertonic, 24000 for Edge/ElevenLabs)
-            const targetRate = serverSampleRate || 44100;
-            
+        function getAudioCtx() {
             // Create or resume the persistent AudioContext
-            if (!persistentCtx || persistentCtx.state === 'closed' || persistentCtxSampleRate !== targetRate) {
-                // Close old context if sample rate changed
-                if (persistentCtx && persistentCtx.state !== 'closed') {
-                    try { persistentCtx.close(); } catch(e) {}
-                }
-                persistentCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: targetRate });
-                persistentCtxSampleRate = targetRate;
+            // Audio is always 24000Hz (all TTS backends resample to 24kHz)
+            if (!persistentCtx || persistentCtx.state === 'closed') {
+                persistentCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
             }
             if (persistentCtx.state === 'suspended') {
-                // Mobile Safari requires resume from user gesture
+                // Mobile Safari/Chrome require resume from user gesture
                 persistentCtx.resume();
             }
             return persistentCtx;
@@ -772,10 +764,10 @@
 
         function scheduleAudioChunk(base64Data, sampleRate, seq) {
             try {
-                const ctx = getAudioCtx(sampleRate);
+                const ctx = getAudioCtx();
                 const float32 = decodePCM(base64Data);
 
-                // Resample if needed (handles server/client sample rate mismatch)
+                // Resample if needed (server sends 24000Hz, handle any mismatch)
                 let audioData = float32;
                 let rate = sampleRate;
                 if (sampleRate !== ctx.sampleRate) {
@@ -847,7 +839,7 @@
         function scheduleAudioCompletion(responseText) {
             // Calculate when the last chunk will finish playing
             // and set a timer to trigger continuous mode or ready state
-            const ctx = getAudioCtx(persistentCtxSampleRate || 44100);
+            const ctx = getAudioCtx();
             const timeUntilDone = Math.max(0, (nextStartTime - ctx.currentTime) * 1000);
 
             isPlaying = true;

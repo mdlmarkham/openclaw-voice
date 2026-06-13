@@ -115,16 +115,10 @@ async def startup():
         # Use OpenClaw gateway (connects to Aria!)
         logger.info(f"🦞 Connecting to OpenClaw gateway: {gateway_url}")
         backend = AIBackend(
-            backend_type="openai",  # Gateway speaks OpenAI API
+            backend_type="openclaw",  # Routes to metis agent
             url=f"{gateway_url}/v1",
-            model="openclaw:voice",  # Maps to 'voice' agent in config
+            model="openclaw/metis",  # Routes to the metis agent with full persona/memory
             api_key=gateway_token,
-            system_prompt=(
-                "This conversation is happening via real-time voice chat. "
-                "Keep responses concise and conversational — a few sentences "
-                "at most unless the topic genuinely needs depth. "
-                "No markdown, bullet points, code blocks, or special formatting."
-            ),
         )
     else:
         # Fallback to direct OpenAI
@@ -249,6 +243,7 @@ async def websocket_endpoint(websocket: WebSocket):
     audio_buffer = []
     is_listening = False
     session_start = None
+    session_agent = None  # Track selected agent per session
     
     try:
         while True:
@@ -258,6 +253,10 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg["type"] == "start_listening":
                 is_listening = True
                 audio_buffer = []
+                # Update agent if specified
+                if "agent" in msg:
+                    session_agent = msg["agent"]
+                    logger.info(f"Agent selected: {session_agent}")
                 await websocket.send_json({"type": "listening_started"})
                 logger.debug("Started listening")
                 
@@ -288,7 +287,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         audio_chunks = []
                         
                         # Stream response and synthesize sentences as they complete
-                        async for chunk in backend.chat_stream(transcript):
+                        # Build model override based on selected agent
+                        agent_model = f"openclaw/{session_agent}" if session_agent else None
+                        async for chunk in backend.chat_stream(transcript, model=agent_model):
                             full_response += chunk
                             sentence_buffer += chunk
                             

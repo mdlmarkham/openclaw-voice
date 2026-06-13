@@ -25,6 +25,8 @@ from . import state as app_state
 from .transport import WebSocketTransport
 from .tts import ChatterboxTTS
 
+_tts_lock = asyncio.Lock()
+
 try:
     from .webrtc import WebRTCTransport, register_session, remove_session
 
@@ -155,7 +157,7 @@ async def websocket_endpoint(websocket: WebSocket):
         if not api_key:
             await websocket.close(code=4002, reason="Invalid API key")
             return
-        if not token_manager.check_rate_limit(api_key):
+        if not await token_manager.check_rate_limit(api_key):
             await websocket.close(code=4003, reason="Rate limit exceeded")
             return
         logger.info(f"Client connected: {api_key.name} (tier={api_key.tier})")
@@ -194,25 +196,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"Agent selected: {session_agent}")
-                    # Set backend agent for per-agent voice personality hints
-                    app_state.backend._current_agent = session_agent
-                    if (
-                        session_agent in ChatterboxTTS.AGENT_VOICE_MAP
-                        and app_state.tts is not None
-                        and app_state.tts._backend == "supertonic"
-                    ):
-                        new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]
-                        if new_voice != app_state.tts._supertonic_voice:
-                            try:
-                                app_state.tts._supertonic_style = app_state.tts._supertonic_tts.get_voice_style(
-                                    new_voice
-                                )
-                                app_state.tts._supertonic_voice = new_voice
-                                logger.info(
-                                    f"Switched TTS voice to {new_voice} for agent {session_agent}"
-                                )
-                            except Exception as e:
-                                logger.warning(f"Failed to switch voice to {new_voice}: {e}")
+                    async with _tts_lock:
+                        if (
+                            session_agent in ChatterboxTTS.AGENT_VOICE_MAP
+                            and app_state.tts is not None
+                            and app_state.tts._backend == "supertonic"
+                        ):
+                            new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]
+                            if new_voice != app_state.tts._supertonic_voice:
+                                try:
+                                    app_state.tts._supertonic_style = app_state.tts._supertonic_tts.get_voice_style(
+                                        new_voice
+                                    )
+                                    app_state.tts._supertonic_voice = new_voice
+                                    logger.info(
+                                        f"Switched TTS voice to {new_voice} for agent {session_agent}"
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Failed to switch voice to {new_voice}: {e}")
                 await transport.send_json({"type": "listening_started"})
 
             elif msg_type == "stop_listening":
@@ -341,22 +342,21 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"[webrtc:{session_id}] Agent selected: {session_agent}")
-                    # Set backend agent for per-agent voice personality hints
-                    app_state.backend._current_agent = session_agent
-                    if (
-                        session_agent in ChatterboxTTS.AGENT_VOICE_MAP
-                        and app_state.tts is not None
-                        and app_state.tts._backend == "supertonic"
-                    ):
-                        new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]
-                        if new_voice != app_state.tts._supertonic_voice:
-                            try:
-                                app_state.tts._supertonic_style = (
-                                    app_state.tts._supertonic_tts.get_voice_style(new_voice)
-                                )
-                                app_state.tts._supertonic_voice = new_voice
-                            except Exception as e:
-                                logger.warning(f"Failed to switch voice: {e}")
+                    async with _tts_lock:
+                        if (
+                            session_agent in ChatterboxTTS.AGENT_VOICE_MAP
+                            and app_state.tts is not None
+                            and app_state.tts._backend == "supertonic"
+                        ):
+                            new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]
+                            if new_voice != app_state.tts._supertonic_voice:
+                                try:
+                                    app_state.tts._supertonic_style = (
+                                        app_state.tts._supertonic_tts.get_voice_style(new_voice)
+                                    )
+                                    app_state.tts._supertonic_voice = new_voice
+                                except Exception as e:
+                                    logger.warning(f"Failed to switch voice: {e}")
                 await transport.send_json({"type": "listening_started"})
 
             elif msg_type == "stop_listening":

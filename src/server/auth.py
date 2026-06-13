@@ -7,6 +7,7 @@ Token system like Telegram Bot API:
 - Hosted version charges per minute or monthly
 """
 
+import asyncio
 import json
 import os
 import secrets
@@ -65,6 +66,7 @@ class TokenManager:
         self._keys: Dict[str, APIKey] = {}
         self._key_to_id: Dict[str, str] = {}
         self._db_path = db_path or os.getenv("OPENCLAW_AUTH_DB") or str(DB_DIR / "auth.db")
+        self._rl_lock = asyncio.Lock()
 
     def _ensure_db(self):
         """Create the directory and database table if missing."""
@@ -208,24 +210,25 @@ class TokenManager:
 
         return api_key
 
-    def check_rate_limit(self, api_key: APIKey) -> bool:
+    async def check_rate_limit(self, api_key: APIKey) -> bool:
         """
         Check if request is within rate limits using a fixed window.
 
         Returns True if allowed, False if rate limited.
         """
-        now = datetime.now(tz=None)
-        window_start = getattr(api_key, "_window_start", None)
+        async with self._rl_lock:
+            now = datetime.now(tz=None)
+            window_start = getattr(api_key, "_window_start", None)
 
-        if window_start is None or (now - window_start).total_seconds() >= 60:
-            api_key._window_start = now
-            api_key.request_count_this_minute = 0
+            if window_start is None or (now - window_start).total_seconds() >= 60:
+                api_key._window_start = now
+                api_key.request_count_this_minute = 0
 
-        if api_key.request_count_this_minute >= api_key.rate_limit_per_minute:
-            return False
+            if api_key.request_count_this_minute >= api_key.rate_limit_per_minute:
+                return False
 
-        api_key.request_count_this_minute += 1
-        return True
+            api_key.request_count_this_minute += 1
+            return True
 
     def check_monthly_quota(self, api_key: APIKey, minutes: float = 0) -> bool:
         """

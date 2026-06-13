@@ -7,9 +7,11 @@ so we don't duplicate conversation history. This ensures continuity across voice
 and text channels — a conversation started in Telegram continues seamlessly in voice.
 
 Direct OpenAI mode: manages its own conversation history (last 10 turns) since
-there's no external memory store.
+there's no external memory store. Uses per-session history via lock to prevent
+cross-session interleaving.
 """
 
+import asyncio
 from typing import Optional, List, Dict, AsyncGenerator
 
 from loguru import logger
@@ -99,7 +101,7 @@ class AIBackend:
         self.api_key = api_key
         self.system_prompt = system_prompt or FULL_SYSTEM_PROMPT
         self.conversation_history: List[Dict] = []
-        self._current_agent: Optional[str] = None  # Track current agent for per-agent voice hints
+        self._history_lock = asyncio.Lock()
         self._client = None
         self._setup_client()
 
@@ -158,47 +160,51 @@ class AIBackend:
             # Fallback echo response
             return f"I heard you say: {user_message}"
 
-    async def chat_stream(self, user_message: str, model: str = None) -> AsyncGenerator[str, None]:
+    async def chat_stream(
+        self,
+        user_message: str,
+        model: str = None,
+        agent_hint: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
         """
         Stream a response, yielding chunks as they arrive.
 
         Args:
             user_message: The user's transcribed speech
             model: Override model/agent for this request
+            agent_hint: Per-request agent ID for voice hint selection (not shared state)
 
         Yields:
             Text chunks as they're generated
         """
         use_model = model or self.model
         if (self.backend_type in ("openai", "openclaw")) and self._client:
-            async for chunk in self._chat_openai_stream(user_message, model=use_model):
+            async for chunk in self._chat_openai_stream(
+                user_message, model=use_model, agent_hint=agent_hint
+            ):
                 yield chunk
         else:
             yield f"I heard you say: {user_message}"
 
-    async def _chat_openai(self, user_message: str, model: str = None) -> str:
+    async def _chat_openai(self, user_message: str, model: str = None) -> str:  # noqa: C901
         """Chat via OpenAI-compatible API."""
         use_model = model or self.model
         is_openclaw = self.backend_type == "openclaw"
 
         if is_openclaw:
-            # OpenClaw gateway: send only voice hint + user message.
-            # Gateway already has full persona, memory, workspace context.
-            # Sending conversation history would duplicate what the gateway tracks,
-            # breaking cross-channel continuity (voice ↔ Telegram ↔ other).
-            voice_hint = AGENT_VOICE_HINTS.get(self._current_agent, DEFAULT_VOICE_HINT)
+            voice_hint = DEFAULT_VOICE_HINT
             messages = [{"role": "system", "content": voice_hint}]
             messages.append({"role": "user", "content": user_message})
         else:
-            # Direct OpenAI: manage our own history since there's no external memory.
-            self.conversation_history.append(
-                {
-                    "role": "user",
-                    "content": user_message,
-                }
-            )
-            messages = [{"role": "system", "content": self.system_prompt}]
-            messages.extend(self.conversation_history[-10:])
+            async with self._history_lock:
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": user_message,
+                    }
+                )
+                messages = [{"role": "system", "content": self.system_prompt}]
+                messages.extend(self.conversation_history[-10:])
 
         try:
             response = await self._client.chat.completions.create(
@@ -226,28 +232,29 @@ class AIBackend:
             return "Sorry, I had trouble processing that. Could you try again?"
 
     async def _chat_openai_stream(
-        self, user_message: str, model: str = None
+        self,
+        user_message: str,
+        model: str = None,
+        agent_hint: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream chat via OpenAI-compatible API."""
         use_model = model or self.model
         is_openclaw = self.backend_type == "openclaw"
 
         if is_openclaw:
-            # OpenClaw gateway: voice hint + user message only.
-            # Gateway owns conversation memory — no history duplication.
-            voice_hint = AGENT_VOICE_HINTS.get(self._current_agent, DEFAULT_VOICE_HINT)
+            voice_hint = AGENT_VOICE_HINTS.get(agent_hint, DEFAULT_VOICE_HINT)
             messages = [{"role": "system", "content": voice_hint}]
             messages.append({"role": "user", "content": user_message})
         else:
-            # Direct OpenAI: manage our own history.
-            self.conversation_history.append(
-                {
-                    "role": "user",
-                    "content": user_message,
-                }
-            )
-            messages = [{"role": "system", "content": self.system_prompt}]
-            messages.extend(self.conversation_history[-10:])
+            async with self._history_lock:
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": user_message,
+                    }
+                )
+                messages = [{"role": "system", "content": self.system_prompt}]
+                messages.extend(self.conversation_history[-10:])
 
         full_response = ""
 
@@ -266,14 +273,14 @@ class AIBackend:
                     full_response += text
                     yield text
 
-            # Only track history in direct OpenAI mode
             if not is_openclaw:
-                self.conversation_history.append(
-                    {
-                        "role": "assistant",
-                        "content": full_response,
-                    }
-                )
+                async with self._history_lock:
+                    self.conversation_history.append(
+                        {
+                            "role": "assistant",
+                            "content": full_response,
+                        }
+                    )
 
         except Exception as e:
             logger.error(f"OpenAI streaming error: {e}")

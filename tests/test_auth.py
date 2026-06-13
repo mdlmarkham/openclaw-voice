@@ -42,17 +42,15 @@ class TestTokenManager:
         assert tm.validate_key("") is None
         assert tm.validate_key(None) is None
 
-    def test_rate_limit(self):
+    async def test_rate_limit(self):
         """Test rate limiting."""
         tm = TokenManager()
         _, api_key = tm.generate_key("test", rate_limit=5)
 
-        # Should allow up to rate limit
         for i in range(5):
-            assert tm.check_rate_limit(api_key) is True
+            assert await tm.check_rate_limit(api_key) is True
 
-        # Should block after limit
-        assert tm.check_rate_limit(api_key) is False
+        assert await tm.check_rate_limit(api_key) is False
 
     def test_monthly_quota(self):
         """Test monthly quota checking."""

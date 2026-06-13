@@ -82,7 +82,9 @@ class VoicePipeline:
             t_first_audio: Optional[float] = None
             sentence_count = 0
 
-            async for chunk in self._backend.chat_stream(transcript, model=agent_model):
+            async for chunk in self._backend.chat_stream(
+                transcript, model=agent_model, agent_hint=session.agent_id
+            ):
                 full_response += chunk
                 sentence_buffer += chunk
 

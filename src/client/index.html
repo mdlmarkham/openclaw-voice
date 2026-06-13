@@ -657,8 +657,9 @@
                     streamingText = '';
                     currentResponseElement = null;
                     // Reset audio scheduling for new response
+                    cancelAllAudio();
                     nextStartTime = 0;
-                    audioQueuing = true;
+                    isPlaying = true;
                     break;
                 case 'response_chunk':
                     streamingText += msg.text;
@@ -771,9 +772,11 @@
                 source.start(startTime);
                 nextStartTime = startTime + duration;
 
+                // Track for cancellation
+                scheduledSources.push(source);
                 source.onended = () => {
-                    // Don't trigger continuous mode here —
-                    // we track completion via response_complete + timer
+                    const idx = scheduledSources.indexOf(source);
+                    if (idx > -1) scheduledSources.splice(idx, 1);
                 };
             } catch (e) {
                 console.error('Audio scheduling error:', e);
@@ -781,6 +784,20 @@
         }
 
         let completionTimer = null;
+        let isPlaying = false;  // Track whether AI audio is still playing
+        let scheduledSources = [];  // Track scheduled BufferSource nodes for cancellation
+
+        function cancelAllAudio() {
+            // Stop all scheduled audio playback immediately
+            scheduledSources.forEach(src => {
+                try { src.stop(); } catch(e) { /* already ended */ }
+            });
+            scheduledSources = [];
+            isPlaying = false;
+            nextStartTime = 0;
+            if (completionTimer) clearTimeout(completionTimer);
+            completionTimer = null;
+        }
 
         function scheduleAudioCompletion(responseText) {
             // Calculate when the last chunk will finish playing
@@ -788,25 +805,29 @@
             const ctx = getAudioCtx();
             const timeUntilDone = Math.max(0, (nextStartTime - ctx.currentTime) * 1000);
 
+            isPlaying = true;
+
             if (completionTimer) clearTimeout(completionTimer);
             completionTimer = setTimeout(() => {
+                isPlaying = false;
                 if (continuousMode) {
                     setStatus('🎙️ Ready to listen...', true);
                     setTimeout(() => {
-                        if (continuousMode) startRecording();
-                    }, 300);
+                        if (continuousMode && !isPlaying) startRecording();
+                    }, 500);  // 500ms pause to ensure playback is truly done
                 } else {
                     setStatus('Ready');
                 }
-            }, timeUntilDone + 200); // 200ms buffer to avoid cutting off last word
+            }, timeUntilDone + 500); // 500ms buffer — better too late than overlapping
         }
 
         function onAudioComplete() {
+            isPlaying = false;
             if (continuousMode) {
                 setStatus('🎙️ Ready to listen...', true);
                 setTimeout(() => {
-                    if (continuousMode) startRecording();
-                }, 300);
+                    if (continuousMode && !isPlaying) startRecording();
+                }, 500);
             } else {
                 setStatus('Ready');
             }
@@ -841,6 +862,9 @@
         // ── Audio recording ─────────────────────────────────────
         async function startRecording() {
             if (isRecording) return;
+            
+            // Cancel any playing audio to prevent overlap/echo
+            cancelAllAudio();
             
             if (!ws || ws.readyState !== WebSocket.OPEN) {
                 errorEl.textContent = 'Not connected — please wait';

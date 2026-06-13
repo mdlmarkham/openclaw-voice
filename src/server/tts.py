@@ -141,18 +141,12 @@ class ChatterboxTTS:
             except Exception as e:
                 logger.error(f"ElevenLabs streaming error: {e}")
         elif self._backend == "edge":
-            # Edge TTS: async-native, runs in the current event loop
+            # Edge TTS produces MP3 — decode to PCM on server, send int16 bytes
             try:
-                import edge_tts
-
-                voice = self._edge_voice or "en-US-JennyNeural"
-                communicate = edge_tts.Communicate(text, voice)
-                audio_buffer = io.BytesIO()
-
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        yield chunk["data"]
-
+                audio_float32 = await self._synthesize_edge(text)
+                if audio_float32 is not None and len(audio_float32) > 0:
+                    audio_int16 = (audio_float32 * 32768.0).clip(-32768, 32767).astype(np.int16)
+                    yield audio_int16.tobytes()
             except Exception as e:
                 logger.error(f"Edge TTS streaming error: {e}")
         else:
@@ -167,14 +161,21 @@ class ChatterboxTTS:
                 logger.error(f"TTS fallback error: {e}")
 
     async def _synthesize_edge(self, text: str) -> np.ndarray:
-        """Edge TTS — fully async, no event loop hacks."""
+        """Edge TTS — fully async, no event loop hacks.
+
+        Collects MP3 chunks from edge_tts stream, decodes to float32 PCM at 24kHz.
+        """
         try:
             import edge_tts
 
             voice = self._edge_voice or "en-US-JennyNeural"
             communicate = edge_tts.Communicate(text, voice)
+
+            # Collect MP3 audio chunks into a buffer
             audio_buffer = io.BytesIO()
-            await communicate.save_to_buffer(audio_buffer)
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_buffer.write(chunk["data"])
             audio_buffer.seek(0)
 
             # Decode MP3 to float32 PCM

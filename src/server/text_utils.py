@@ -7,6 +7,23 @@ while preserving original for display.
 
 import re
 
+_RE_CODE_BLOCK = re.compile(r"```[\s\S]*?```")
+_RE_INLINE_CODE = re.compile(r"`([^`]+)`")
+_RE_HEADER = re.compile(r"^#{1,6}\s*", flags=re.MULTILINE)
+_RE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+_RE_ITALIC = re.compile(r"\*([^*]+)\*")
+_RE_UNDERLINE_BOLD = re.compile(r"__([^_]+)__")
+_RE_UNDERLINE_ITALIC = re.compile(r"_([^_]+)_")
+_RE_HASHTAG = re.compile(r"#(\w+)")
+_RE_URL = re.compile(r"https?://\S+")
+_RE_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_RE_EMOJI = re.compile(r"[🔗📦📁💻🖥️⚡🔧🛠️📝✅❌⚠️🚀🎯💡🔍📊📈📉🗂️📋]")
+_RE_BULLET = re.compile(r"^\s*[-•]\s*", flags=re.MULTILINE)
+_RE_NUMBERED = re.compile(r"^\s*\d+\.\s*", flags=re.MULTILINE)
+_RE_MULTI_NEWLINE = re.compile(r"\n{2,}")
+_RE_NEWLINE = re.compile(r"\n")
+_RE_MULTI_SPACE = re.compile(r"\s{2,}")
+
 
 def clean_for_speech(text: str) -> str:
     """
@@ -26,49 +43,24 @@ def clean_for_speech(text: str) -> str:
     if not text:
         return text
 
-    # Remove code blocks first (``` ... ```)
-    text = re.sub(r"```[\s\S]*?```", " code block omitted ", text)
-
-    # Remove inline code (`...`)
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-
-    # Remove markdown headers (# ## ###)
-    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
-
-    # Remove bold/italic markers
-    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)  # **bold**
-    text = re.sub(r"\*([^*]+)\*", r"\1", text)  # *italic*
-    text = re.sub(r"__([^_]+)__", r"\1", text)  # __bold__
-    text = re.sub(r"_([^_]+)_", r"\1", text)  # _italic_
-
-    # Remove hashtags (but keep the word)
-    text = re.sub(r"#(\w+)", r"\1", text)
-
-    # Remove URLs
-    text = re.sub(r"https?://\S+", "", text)
-
-    # Remove markdown links [text](url) -> text
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-
-    # Remove common emojis (keep some expressive ones?)
-    # For now, remove most technical emojis
-    text = re.sub(r"[🔗📦📁💻🖥️⚡🔧🛠️📝✅❌⚠️🚀🎯💡🔍📊📈📉🗂️📋]", "", text)
-
-    # Convert bullet points to spoken form
-    text = re.sub(r"^\s*[-•]\s*", "Next, ", text, flags=re.MULTILINE)
-    text = re.sub(r"^\s*\d+\.\s*", "", text, flags=re.MULTILINE)  # Remove numbered lists
-
-    # Clean up multiple newlines
-    text = re.sub(r"\n{2,}", ". ", text)
-    text = re.sub(r"\n", " ", text)
-
-    # Clean up multiple spaces
-    text = re.sub(r"\s{2,}", " ", text)
-
-    # Remove leading/trailing whitespace
+    text = _RE_CODE_BLOCK.sub(" code block omitted ", text)
+    text = _RE_INLINE_CODE.sub(r"\1", text)
+    text = _RE_HEADER.sub("", text)
+    text = _RE_BOLD.sub(r"\1", text)
+    text = _RE_ITALIC.sub(r"\1", text)
+    text = _RE_UNDERLINE_BOLD.sub(r"\1", text)
+    text = _RE_UNDERLINE_ITALIC.sub(r"\1", text)
+    text = _RE_HASHTAG.sub(r"\1", text)
+    text = _RE_URL.sub("", text)
+    text = _RE_MD_LINK.sub(r"\1", text)
+    text = _RE_EMOJI.sub("", text)
+    text = _RE_BULLET.sub("Next, ", text)
+    text = _RE_NUMBERED.sub("", text)
+    text = _RE_MULTI_NEWLINE.sub(". ", text)
+    text = _RE_NEWLINE.sub(" ", text)
+    text = _RE_MULTI_SPACE.sub(" ", text)
     text = text.strip()
 
-    # Don't end with "Next, "
     if text.endswith("Next,"):
         text = text[:-5].strip()
 

@@ -186,45 +186,58 @@ class AIBackend:
         else:
             yield f"I heard you say: {user_message}"
 
-    async def _chat_openai(self, user_message: str, model: str = None) -> str:  # noqa: C901
-        """Chat via OpenAI-compatible API."""
-        use_model = model or self.model
+    async def _build_messages(
+        self,
+        user_message: str,
+        agent_hint: Optional[str] = None,
+    ) -> tuple[list[dict], bool]:
+        """Build the messages list for an OpenAI API call.
+
+        Returns (messages, is_openclaw).
+        """
         is_openclaw = self.backend_type == "openclaw"
 
         if is_openclaw:
-            voice_hint = DEFAULT_VOICE_HINT
-            messages = [{"role": "system", "content": voice_hint}]
+            voice_hint = AGENT_VOICE_HINTS.get(agent_hint, DEFAULT_VOICE_HINT)
+            messages: list[dict] = [{"role": "system", "content": voice_hint}]
             messages.append({"role": "user", "content": user_message})
-        else:
+            return messages, is_openclaw
+
+        async with self._history_lock:
+            self.conversation_history.append(
+                {
+                    "role": "user",
+                    "content": user_message,
+                }
+            )
+            messages = [{"role": "system", "content": self.system_prompt}]
+            messages.extend(self.conversation_history[-10:])
+            return messages, is_openclaw
+
+    async def _record_assistant_response(self, text: str) -> None:
+        """Append assistant response to conversation history (direct mode only)."""
+        if self.backend_type != "openclaw":
             async with self._history_lock:
                 self.conversation_history.append(
                     {
-                        "role": "user",
-                        "content": user_message,
+                        "role": "assistant",
+                        "content": text,
                     }
                 )
-                messages = [{"role": "system", "content": self.system_prompt}]
-                messages.extend(self.conversation_history[-10:])
+
+    async def _chat_openai(self, user_message: str, model: str = None) -> str:
+        """Chat via OpenAI-compatible API."""
+        messages, _ = await self._build_messages(user_message)
 
         try:
             response = await self._client.chat.completions.create(
-                model=use_model,
+                model=model or self.model,
                 messages=messages,
                 max_tokens=500,
                 temperature=0.7,
             )
-
             assistant_message = response.choices[0].message.content
-
-            # Only track history in direct OpenAI mode
-            if not is_openclaw:
-                self.conversation_history.append(
-                    {
-                        "role": "assistant",
-                        "content": assistant_message,
-                    }
-                )
-
+            await self._record_assistant_response(assistant_message)
             return assistant_message
 
         except Exception as e:
@@ -238,29 +251,13 @@ class AIBackend:
         agent_hint: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream chat via OpenAI-compatible API."""
-        use_model = model or self.model
-        is_openclaw = self.backend_type == "openclaw"
-
-        if is_openclaw:
-            voice_hint = AGENT_VOICE_HINTS.get(agent_hint, DEFAULT_VOICE_HINT)
-            messages = [{"role": "system", "content": voice_hint}]
-            messages.append({"role": "user", "content": user_message})
-        else:
-            async with self._history_lock:
-                self.conversation_history.append(
-                    {
-                        "role": "user",
-                        "content": user_message,
-                    }
-                )
-                messages = [{"role": "system", "content": self.system_prompt}]
-                messages.extend(self.conversation_history[-10:])
+        messages, _ = await self._build_messages(user_message, agent_hint=agent_hint)
 
         full_response = ""
 
         try:
             stream = await self._client.chat.completions.create(
-                model=use_model,
+                model=model or self.model,
                 messages=messages,
                 max_tokens=500,
                 temperature=0.7,
@@ -273,14 +270,7 @@ class AIBackend:
                     full_response += text
                     yield text
 
-            if not is_openclaw:
-                async with self._history_lock:
-                    self.conversation_history.append(
-                        {
-                            "role": "assistant",
-                            "content": full_response,
-                        }
-                    )
+            await self._record_assistant_response(full_response)
 
         except Exception as e:
             logger.error(f"OpenAI streaming error: {e}")

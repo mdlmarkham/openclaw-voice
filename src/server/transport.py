@@ -26,6 +26,62 @@ from .events import (
 )
 
 
+def _build_transcript(event: TranscriptEvent) -> dict:
+    return {"type": "transcript", "text": event.text, "final": event.final}
+
+
+def _build_response_chunk(event: ResponseChunkEvent) -> dict:
+    return {"type": "response_chunk", "text": event.text}
+
+
+def _build_sentence_start(event: SentenceStartEvent) -> dict:
+    return {"type": "sentence_start", "seq": event.seq}
+
+
+def _build_audio_chunk(event: AudioChunkEvent) -> dict:
+    return {
+        "type": "audio_chunk",
+        "data": base64.b64encode(event.data).decode(),
+        "sample_rate": event.sample_rate,
+        "seq": event.seq,
+    }
+
+
+def _build_sentence_end(event: SentenceEndEvent) -> dict:
+    return {"type": "sentence_end", "seq": event.seq}
+
+
+def _build_response_complete(event: ResponseCompleteEvent) -> dict:
+    return {
+        "type": "response_complete",
+        "text": event.text,
+        "latency": {
+            "stt_ms": event.latency.stt_ms,
+            "first_token_ms": event.latency.first_token_ms,
+            "first_audio_ms": event.latency.first_audio_ms,
+            "llm_total_ms": event.latency.llm_total_ms,
+            "total_ms": event.latency.total_ms,
+            "audio_duration_s": event.latency.audio_duration_s,
+            "sentences": event.latency.sentences,
+        },
+    }
+
+
+def _build_error(event: ErrorEvent) -> dict:
+    return {"type": "error", "message": event.message}
+
+
+_EVENT_SERIALIZERS: dict[type, dict] = {
+    TranscriptEvent: _build_transcript,
+    ResponseChunkEvent: _build_response_chunk,
+    SentenceStartEvent: _build_sentence_start,
+    AudioChunkEvent: _build_audio_chunk,
+    SentenceEndEvent: _build_sentence_end,
+    ResponseCompleteEvent: _build_response_complete,
+    ErrorEvent: _build_error,
+}
+
+
 class AudioTransport(ABC):
     """Pluggable transport for voice audio and events.
 
@@ -77,43 +133,9 @@ class WebSocketTransport(AudioTransport):
             return None
 
     async def send_event(self, event: ServerEvent) -> None:
-        if isinstance(event, TranscriptEvent):
-            await self._ws.send_json(
-                {"type": "transcript", "text": event.text, "final": event.final}
-            )
-        elif isinstance(event, ResponseChunkEvent):
-            await self._ws.send_json({"type": "response_chunk", "text": event.text})
-        elif isinstance(event, SentenceStartEvent):
-            await self._ws.send_json({"type": "sentence_start", "seq": event.seq})
-        elif isinstance(event, AudioChunkEvent):
-            await self._ws.send_json(
-                {
-                    "type": "audio_chunk",
-                    "data": base64.b64encode(event.data).decode(),
-                    "sample_rate": event.sample_rate,
-                    "seq": event.seq,
-                }
-            )
-        elif isinstance(event, SentenceEndEvent):
-            await self._ws.send_json({"type": "sentence_end", "seq": event.seq})
-        elif isinstance(event, ResponseCompleteEvent):
-            await self._ws.send_json(
-                {
-                    "type": "response_complete",
-                    "text": event.text,
-                    "latency": {
-                        "stt_ms": event.latency.stt_ms,
-                        "first_token_ms": event.latency.first_token_ms,
-                        "first_audio_ms": event.latency.first_audio_ms,
-                        "llm_total_ms": event.latency.llm_total_ms,
-                        "total_ms": event.latency.total_ms,
-                        "audio_duration_s": event.latency.audio_duration_s,
-                        "sentences": event.latency.sentences,
-                    },
-                }
-            )
-        elif isinstance(event, ErrorEvent):
-            await self._ws.send_json({"type": "error", "message": event.message})
+        builder = _EVENT_SERIALIZERS.get(type(event))
+        if builder is not None:
+            await self._ws.send_json(builder(event))
 
     async def send_json(self, data: dict) -> None:
         await self._ws.send_json(data)

@@ -331,6 +331,30 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
     MAX_AUDIO_BUFFER_SAMPLES = settings.sample_rate * MAX_AUDIO_BUFFER_SECONDS
     is_listening = False
     session_agent: Optional[str] = None
+    rtp_collector_task: Optional[asyncio.Task] = None
+    _buffer_overflow = asyncio.Event()
+
+    async def _collect_rtp_audio():
+        """Background task: read PCM frames from WebRTC audio track."""
+        nonlocal buffer_samples, audio_buffer, is_listening
+        input_track = transport._audio_input
+        if input_track is None:
+            return
+        while True:
+            frame = await input_track.read_frame()
+            if frame is None:
+                if not is_listening:
+                    await asyncio.sleep(0.05)
+                    continue
+                continue
+
+            buffer_samples += len(frame)
+            if buffer_samples > MAX_AUDIO_BUFFER_SAMPLES:
+                audio_buffer.append(frame)
+                is_listening = False
+                _buffer_overflow.set()
+                return
+            audio_buffer.append(frame)
 
     try:
         while True:
@@ -344,6 +368,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                 is_listening = True
                 audio_buffer = []
                 buffer_samples = 0
+                _buffer_overflow.clear()
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"[webrtc:{session_id}] Agent selected: {session_agent}")
@@ -362,20 +387,27 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                                     app_state.tts._supertonic_voice = new_voice
                                 except Exception as e:
                                     logger.warning(f"Failed to switch voice: {e}")
+                if transport._audio_input is not None and (
+                    rtp_collector_task is None or rtp_collector_task.done()
+                ):
+                    rtp_collector_task = asyncio.create_task(_collect_rtp_audio())
                 await transport.send_json({"type": "listening_started"})
 
             elif msg_type == "stop_listening":
                 is_listening = False
+                if rtp_collector_task is not None and not rtp_collector_task.done():
+                    rtp_collector_task.cancel()
+                    rtp_collector_task = None
                 session = SessionContext(agent_id=session_agent)
                 if app_state.pipeline is not None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
                         await transport.send_event(event)
                 audio_buffer = []
                 buffer_samples = 0
+                _buffer_overflow.clear()
                 await transport.send_json({"type": "listening_stopped"})
 
             elif msg_type == "audio_frame" and is_listening:
-                # Audio frames may arrive via data channel in non-RTP mode
                 try:
                     audio_np = np.frombuffer(
                         base64.b64decode(msg["data"]), dtype=np.float32
@@ -390,6 +422,9 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                     )
                     audio_buffer.append(audio_np)
                     is_listening = False
+                    if rtp_collector_task is not None and not rtp_collector_task.done():
+                        rtp_collector_task.cancel()
+                        rtp_collector_task = None
                     session = SessionContext(agent_id=session_agent)
                     if app_state.pipeline is not None:
                         async for event in app_state.pipeline.process_audio(
@@ -398,8 +433,18 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                             await transport.send_event(event)
                     audio_buffer = []
                     buffer_samples = 0
+                    _buffer_overflow.clear()
                 else:
                     audio_buffer.append(audio_np)
+
+            if _buffer_overflow.is_set():
+                _buffer_overflow.clear()
+                session = SessionContext(agent_id=session_agent)
+                if app_state.pipeline is not None:
+                    async for event in app_state.pipeline.process_audio(audio_buffer, session):
+                        await transport.send_event(event)
+                audio_buffer = []
+                buffer_samples = 0
 
             elif msg_type == "ping":
                 await transport.send_json({"type": "pong"})

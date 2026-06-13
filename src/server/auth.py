@@ -14,7 +14,7 @@ import hashlib
 import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, Any
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from loguru import logger
 
@@ -93,24 +93,27 @@ class TokenManager:
         self._ensure_db()
         conn = sqlite3.connect(self._db_path)
         for key_id, key in self._keys.items():
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT OR REPLACE INTO api_keys
                 (key_id, key_hash, name, created_at, rate_limit_per_minute,
                  monthly_minutes, minutes_used, active, tier, features, _window_start)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                key.key_id,
-                key.key_hash,
-                key.name,
-                key.created_at.isoformat(),
-                key.rate_limit_per_minute,
-                key.monthly_minutes,
-                key.minutes_used,
-                1 if key.active else 0,
-                key.tier,
-                json.dumps(key.features),
-                key._window_start.isoformat() if getattr(key, '_window_start', None) else None,
-            ))
+            """,
+                (
+                    key.key_id,
+                    key.key_hash,
+                    key.name,
+                    key.created_at.isoformat(),
+                    key.rate_limit_per_minute,
+                    key.monthly_minutes,
+                    key.minutes_used,
+                    1 if key.active else 0,
+                    key.tier,
+                    json.dumps(key.features),
+                    key._window_start.isoformat() if getattr(key, "_window_start", None) else None,
+                ),
+            )
         conn.commit()
         conn.close()
 
@@ -212,7 +215,7 @@ class TokenManager:
         Returns True if allowed, False if rate limited.
         """
         now = datetime.now(tz=None)
-        window_start = getattr(api_key, '_window_start', None)
+        window_start = getattr(api_key, "_window_start", None)
 
         if window_start is None or (now - window_start).total_seconds() >= 60:
             api_key._window_start = now

@@ -38,8 +38,12 @@ tts = [
     "torch>=2.1.0",
     "torchaudio>=2.1.0",
 ]
+webrtc = [
+    "aiortc>=1.9.0",
+    "av>=12.0.0",
+]
 all = [
-    "openclaw-voice[stt,tts]",
+    "openclaw-voice[stt,tts,webrtc]",
 ]
 dev = [
     "pytest>=7.4.0",

@@ -6,6 +6,8 @@ FROM nvidia/cuda:12.1-cudnn8-runtime-ubuntu22.04
 # Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
+ARG STT_MODEL=large-v3-turbo
+
 # Install Python and dependencies
 RUN apt-get update && apt-get install -y \
     python3.11 \
@@ -41,8 +43,15 @@ RUN uv venv && \
 COPY src/ ./src/
 COPY .env.example ./.env.example
 
-# Create directories for models (will be mounted or downloaded)
+# Create directories for models
 RUN mkdir -p /app/models /app/voices
+
+# Pre-download STT model for faster container startup
+RUN . .venv/bin/activate && python -c "
+from faster_whisper import WhisperModel
+WhisperModel('${STT_MODEL}', device='cpu', compute_type='int8')
+print(f'✅ STT model ${STT_MODEL} cached')
+"
 
 # Environment variables
 ENV OPENCLAW_HOST=0.0.0.0

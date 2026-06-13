@@ -898,6 +898,16 @@
             return div.innerHTML;
         }
         
+        function safeUrl(url) {
+            const blocked = ['javascript:', 'data:', 'vbscript:'];
+            for (const prefix of blocked) {
+                if (url.trim().toLowerCase().startsWith(prefix)) {
+                    return '#';
+                }
+            }
+            return url;
+        }
+
         function renderMarkdown(text) {
             // Escape HTML first to prevent XSS, then apply markdown transforms.
             // The AI response is untrusted input — prompt injection could inject HTML.
@@ -908,7 +918,7 @@
                 .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
                 .replace(/\*([^*]+)\*/g, '<em>$1</em>')
                 .replace(/^#{1,3}\s+(.+)$/gm, '<strong>$1</strong>')
-                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => `<a href="${safeUrl(url)}" target="_blank" rel="noopener">${text}</a>`)
                 .replace(/\n/g, '<br>');
         }
         

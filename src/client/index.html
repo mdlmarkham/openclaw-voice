@@ -658,26 +658,26 @@
         let responseSeq = 0;       // Tracks sentence sequence for ordering
 
         function getAudioCtx() {
-            // Create or resume the persistent AudioContext
-            // Server sends 24kHz audio; Safari may create context at different rate,
-            // but the resampling in scheduleAudioChunk handles the mismatch.
             if (!persistentCtx || persistentCtx.state === 'closed') {
-                // Prefer 24kHz but Safari may override — we resample if needed
                 const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
                 try {
                     persistentCtx = new AudioCtxClass({ sampleRate: 24000 });
                 } catch (e) {
-                    // Safari may reject explicit sampleRate on some versions
                     persistentCtx = new AudioCtxClass();
                 }
-                // iOS Safari: AudioContext starts suspended, must resume on gesture
                 if (persistentCtx.state === 'suspended') {
                     persistentCtx.resume();
                 }
-                console.log(`AudioContext created: sampleRate=${persistentCtx.sampleRate}, state=${persistentCtx.state}`);
+                // Recover from iOS interruption (phone call, etc.)
+                persistentCtx.onstatechange = () => {
+                    if (persistentCtx.state === 'interrupted') {
+                        console.warn('AudioContext interrupted — attempting resume');
+                        persistentCtx.resume();
+                    }
+                };
             }
-            if (persistentCtx.state === 'suspended') {
-                persistentCtx.resume();
+            if (persistentCtx.state === 'suspended' || persistentCtx.state === 'interrupted') {
+                persistentCtx.resume().catch(e => console.warn('AudioContext resume failed:', e));
             }
             return persistentCtx;
         }
@@ -799,6 +799,9 @@
                 const float32 = decodePCM(base64Data);
 
                 // Resample if needed (server sends 24000Hz, handle any mismatch)
+                if (sampleRate !== 24000) {
+                    console.warn(`Sample rate mismatch: server=${sampleRate}, expected=24000`);
+                }
                 let audioData = float32;
                 let rate = sampleRate;
                 if (sampleRate !== ctx.sampleRate) {

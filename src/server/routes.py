@@ -61,6 +61,11 @@ async def health():
             "stt": app_state.stt.status() if app_state.stt else {"backend": "not_loaded"},
             "tts": app_state.tts.status() if app_state.tts else {"backend": "not_loaded"},
             "tts_router": app_state.tts_router.status() if app_state.tts_router else None,
+            "auth": {
+                "enabled": settings.require_auth,
+                "warning": "Authentication is DISABLED — /api/keys and WebSocket access are open. Set OPENCLAW_REQUIRE_AUTH=true in production."
+                    if not settings.require_auth else None,
+            },
             "backend": app_state.backend.backend_type if app_state.backend else "not_loaded",
             "vad": "loaded" if app_state.vad else "not_loaded",
             "config": {

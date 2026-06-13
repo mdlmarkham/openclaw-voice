@@ -11,6 +11,7 @@ import asyncio
 import io
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Optional, AsyncGenerator
 
@@ -402,6 +403,37 @@ class _EdgeFallback:
             logger.error(f"Edge TTS fallback error: {e}")
 
 
+class TTSCache:
+    """Simple in-memory LRU cache for TTS results.
+
+    Caches synthesized audio bytes keyed by (text, voice). Avoids redundant
+    synthesis when the same text is spoken multiple times.
+    """
+
+    def __init__(self, maxsize: int = 128, ttl_seconds: int = 300):
+        self._maxsize = maxsize
+        self._ttl = ttl_seconds
+        self._cache: dict[tuple[str, str], tuple[float, list[bytes]]] = {}
+
+    def get(self, text: str, voice: str) -> Optional[list[bytes]]:
+        key = (text, voice)
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        ts, chunks = entry
+        if time.monotonic() - ts > self._ttl:
+            del self._cache[key]
+            return None
+        return chunks
+
+    def put(self, text: str, voice: str, chunks: list[bytes]) -> None:
+        key = (text, voice)
+        self._cache[key] = (time.monotonic(), chunks)
+        if len(self._cache) > self._maxsize:
+            oldest = min(self._cache.keys(), key=lambda k: self._cache[k][0])
+            del self._cache[oldest]
+
+
 class TTSRouter:
     """Routes TTS requests to the best available backend.
 
@@ -415,10 +447,12 @@ class TTSRouter:
         supertonic: ChatterboxTTS,
         higgs: Optional["HiggsTTS"] = None,
         backend: str = "auto",
+        cache: Optional[TTSCache] = None,
     ):
         self._supertonic = supertonic
         self._higgs = higgs
         self._backend = backend
+        self._cache = cache or TTSCache()
 
     @property
     def supertonic(self) -> "ChatterboxTTS":
@@ -434,6 +468,10 @@ class TTSRouter:
             return "higgs"
         return self._supertonic._backend if self._supertonic else "mock"
 
+    @property
+    def _cached_voice(self) -> str:
+        return self._higgs._default_voice if self._higgs else "default"
+
     async def synthesize_stream(
         self,
         text: str,
@@ -441,19 +479,29 @@ class TTSRouter:
         agent_hint: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
         """Synthesize speech using the best available backend."""
-        prefer_higgs = self._backend != "supertonic" and self._higgs and self._higgs.available
-
-        if prefer_higgs:
-            # Inject control tokens for personality
-            enriched = _inject_control_tokens(text, agent_hint) if agent_hint else text
-            async for chunk in self._higgs.synthesize_stream(enriched, voice=voice):
+        use_voice = voice or self._cached_voice
+        cached = self._cache.get(text, use_voice)
+        if cached is not None:
+            for chunk in cached:
                 yield chunk
             return
 
-        if self._supertonic:
-            clean = _strip_control_tokens(text) if not prefer_higgs else text
-            async for chunk in self._supertonic.synthesize_stream(clean):
+        chunks: list[bytes] = []
+        prefer_higgs = self._backend != "supertonic" and self._higgs and self._higgs.available
+
+        if prefer_higgs:
+            enriched = _inject_control_tokens(text, agent_hint) if agent_hint else text
+            async for chunk in self._higgs.synthesize_stream(enriched, voice=voice):
+                chunks.append(chunk)
                 yield chunk
+        elif self._supertonic:
+            clean = _strip_control_tokens(text)
+            async for chunk in self._supertonic.synthesize_stream(clean):
+                chunks.append(chunk)
+                yield chunk
+
+        if chunks:
+            self._cache.put(text, use_voice, chunks)
 
     async def synthesize(
         self,

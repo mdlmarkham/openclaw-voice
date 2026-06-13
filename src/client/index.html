@@ -1207,16 +1207,32 @@
                 const resp = await fetch(`${proto}//${host}/health`, { signal: AbortSignal.timeout(3000) });
                 if (resp.ok) {
                     const data = await resp.json();
-                    const cfg = data.tts_detail || {};
-                    document.getElementById('cfgStt').textContent = data.stt || '—';
-                    document.getElementById('cfgTts').textContent = cfg.backend || data.tts || '—';
-                    document.getElementById('cfgVoice').textContent = cfg.voice || cfg.edge_voice || '—';
+                    // STT: now a nested object from status() method
+                    const stt = typeof data.stt === 'object' ? data.stt : { backend: data.stt };
+                    const sttModel = stt.model || stt.backend || '—';
+                    const sttDevice = stt.device ? ` (${stt.device})` : '';
+                    document.getElementById('cfgStt').textContent = `${sttModel}${sttDevice}`;
+
+                    // TTS: now a nested object from status() method
+                    const tts = typeof data.tts === 'object' ? data.tts : { backend: data.tts };
+                    const cfg = data.config || {};
+                    if (tts.backend === 'supertonic' && tts.model) {
+                        document.getElementById('cfgTts').textContent = `supertonic (${tts.model})`;
+                        document.getElementById('cfgVoice').textContent = `${tts.voice} @ ${tts.sample_rate}Hz`;
+                    } else if (tts.backend === 'edge') {
+                        document.getElementById('cfgTts').textContent = 'edge-tts';
+                        document.getElementById('cfgVoice').textContent = tts.edge_voice || cfg.edge_voice || '—';
+                    } else {
+                        document.getElementById('cfgTts').textContent = tts.backend || '—';
+                        document.getElementById('cfgVoice').textContent = tts.voice || '—';
+                    }
+
                     document.getElementById('cfgBackend').textContent = data.backend || '—';
-                    
-                    // Show model version for Supertonic
-                    if (cfg.backend === 'supertonic' && cfg.model) {
-                        document.getElementById('cfgTts').textContent = `supertonic (${cfg.model})`;
-                        document.getElementById('cfgVoice').textContent = `${cfg.voice} @ ${cfg.sample_rate}Hz`;
+
+                    // Show voice model (e.g. DeepSeek V4 Flash) if configured
+                    if (cfg.voice_model) {
+                        const modelName = cfg.voice_model.split('/').pop(); // Just the model name part
+                        document.getElementById('cfgBackend').textContent = `${data.backend} · ${modelName}`;
                     }
                     
                     // Uptime

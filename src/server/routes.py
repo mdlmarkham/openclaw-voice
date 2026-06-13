@@ -183,8 +183,26 @@ async def websocket_endpoint(websocket: WebSocket):
     MAX_AUDIO_BUFFER_SECONDS = 30
     MAX_AUDIO_BUFFER_SAMPLES = settings.sample_rate * MAX_AUDIO_BUFFER_SECONDS
     is_listening = False
+    is_playing = False
+    pipeline_task: Optional[asyncio.Task] = None
     session_agent: Optional[str] = None
     vad_endpoint: Optional[VADEndpoint] = None
+    barge_in_vad: Optional[VADEndpoint] = None
+
+    async def _run_pipeline(buf: list[np.ndarray], session: SessionContext) -> None:
+        """Run the voice pipeline in a background task."""
+        nonlocal is_playing
+        is_playing = True
+        try:
+            if app_state.pipeline is not None:
+                async for event in app_state.pipeline.process_audio(buf, session):
+                    await transport.send_event(event)
+        except asyncio.CancelledError:
+            logger.debug("Pipeline cancelled (barge-in)")
+            await transport.send_json({"type": "interrupt"})
+            raise
+        finally:
+            is_playing = False
 
     try:
         while True:
@@ -195,8 +213,13 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_type = msg.get("type")
 
             if msg_type == "start_listening":
+                # Cancel any in-progress pipeline (barge-in reset)
+                if pipeline_task is not None and not pipeline_task.done():
+                    pipeline_task.cancel()
+                    pipeline_task = None
                 is_listening = True
                 audio_buffer = []
+                buffer_samples = 0
                 if settings.vad_enabled and app_state.vad is not None:
                     vad_endpoint = VADEndpoint(
                         app_state.vad,
@@ -234,9 +257,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 is_listening = False
                 vad_endpoint = None
                 session = SessionContext(agent_id=session_agent)
-                if app_state.pipeline is not None:
-                    async for event in app_state.pipeline.process_audio(audio_buffer, session):
-                        await transport.send_event(event)
+                pipeline_task = asyncio.create_task(
+                    _run_pipeline(audio_buffer, session)
+                )
                 audio_buffer = []
                 buffer_samples = 0
                 await transport.send_json({"type": "listening_stopped"})
@@ -255,9 +278,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         is_listening = False
                         vad_endpoint = None
                         session = SessionContext(agent_id=session_agent)
-                        if app_state.pipeline is not None:
-                            async for event in app_state.pipeline.process_audio(audio_buffer, session):
-                                await transport.send_event(event)
+                        pipeline_task = asyncio.create_task(
+                            _run_pipeline(audio_buffer, session)
+                        )
                         audio_buffer = []
                         buffer_samples = 0
                     else:
@@ -269,13 +292,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         if event == "speech_end":
                             logger.debug("VAD endpoint: speech ended, processing buffer")
                             is_listening = False
+                            vad_endpoint = None
                             session = SessionContext(agent_id=session_agent)
-                            if app_state.pipeline is not None:
-                                async for e in app_state.pipeline.process_audio(audio_buffer, session):
-                                    await transport.send_event(e)
+                            pipeline_task = asyncio.create_task(
+                                _run_pipeline(audio_buffer, session)
+                            )
                             audio_buffer = []
                             buffer_samples = 0
-                            vad_endpoint = None
 
                     # VAD status for client visual feedback
                     if app_state.vad is not None and len(audio_np) > 0:
@@ -288,6 +311,41 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                 except Exception as audio_err:
                     logger.warning(f"Audio decode error: {audio_err}")
+
+            # Barge-in: detect speech during playback
+            elif msg_type == "audio" and is_playing:
+                try:
+                    audio_bytes = base64.b64decode(msg["data"])
+                    audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
+
+                    if barge_in_vad is None and app_state.vad is not None:
+                        barge_in_vad = VADEndpoint(
+                            app_state.vad,
+                            threshold=settings.vad_threshold,
+                            min_speech_frames=1,
+                            sample_rate=settings.sample_rate,
+                        )
+                    if barge_in_vad is not None:
+                        event = barge_in_vad.process(audio_np)
+                        if event == "speech_start":
+                            logger.info("Barge-in: user started speaking during playback")
+                            if pipeline_task is not None and not pipeline_task.done():
+                                pipeline_task.cancel()
+                                pipeline_task = None
+                            barge_in_vad = None
+                            is_listening = True
+                            audio_buffer = []
+                            buffer_samples = 0
+                            if settings.vad_enabled and app_state.vad is not None:
+                                vad_endpoint = VADEndpoint(
+                                    app_state.vad,
+                                    threshold=settings.vad_threshold,
+                                    min_silence_frames=max(1, settings.vad_silence_duration_ms * settings.sample_rate // settings.vad_frame_size // 1000),
+                                    sample_rate=settings.sample_rate,
+                                )
+                            await transport.send_json({"type": "listening_started"})
+                except Exception:
+                    pass
 
             elif msg_type == "ping":
                 await transport.send_json({"type": "pong"})

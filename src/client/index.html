@@ -704,12 +704,14 @@
                     setStatus('Getting response...');
                     streamingText = '';
                     currentResponseElement = null;
-                    // Reset audio scheduling for new response
                     cancelAllAudio();
                     nextStartTime = 0;
                     isPlaying = true;
-                    // Don't auto-listen after this response if user manually stopped
-                    // (userStoppedRecording persists through the response)
+                    // Barge-in: start recording immediately during playback
+                    // so user can interrupt the AI response
+                    if (continuousMode && !userStoppedRecording && !isRecording) {
+                        startRecording();
+                    }
                     break;
                 case 'response_chunk':
                     streamingText += msg.text;
@@ -747,6 +749,14 @@
                     setTimeout(() => setStatus('Ready'), 1500);
                     break;
                 case 'pong':
+                    break;
+                case 'interrupt':
+                    // Barge-in: server detected speech during playback
+                    cancelAllAudio();
+                    if (isRecording) stopRecording();
+                    setStatus('🎙️ Interrupted — listening...', true);
+                    userStoppedRecording = false;
+                    // Will be restarted by the server's listening_started message
                     break;
                 case 'vad_status':
                     // Could use for visual feedback
@@ -868,7 +878,9 @@
             if (completionTimer) clearTimeout(completionTimer);
             completionTimer = setTimeout(() => {
                 isPlaying = false;
-                if (continuousMode && !userStoppedRecording) {
+                if (isRecording) {
+                    // Barge-in: already recording, don't re-start
+                } else if (continuousMode && !userStoppedRecording) {
                     setStatus('🎙️ Auto-listening...');
                     startRecording();
                 } else if (continuousMode) {
@@ -876,7 +888,7 @@
                 } else {
                     setStatus('Ready');
                 }
-            }, timeUntilDone + 500); // 500ms buffer — better too late than overlapping
+            }, timeUntilDone + 500);
         }
 
         function onAudioComplete() {

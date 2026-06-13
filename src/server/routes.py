@@ -41,7 +41,11 @@ router = APIRouter()
 @router.get("/voice/")
 async def index():
     """Serve the demo page."""
-    return FileResponse(Path(__file__).resolve().parent.parent / "client" / "index.html")
+    response = FileResponse(Path(__file__).resolve().parent.parent / "client" / "index.html")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @router.get("/health")

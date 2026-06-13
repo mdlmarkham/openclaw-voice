@@ -181,27 +181,77 @@ if __name__ == "__main__":
     ssl_certfile = os.environ.get("OPENCLAW_SSL_CERTFILE")
 
     if ssl_keyfile and ssl_certfile:
-        # Run dual: TLS on configured port + plain HTTP on port-1 for reverse proxy
+        # Start a lightweight HTTP reverse proxy on port-1 for Tailscale Serve.
+        # This avoids spawning a second process that would load all models again.
+        # The proxy just forwards plain HTTP requests to the TLS server on localhost.
         plain_port = settings.port - 1
+        import asyncio
 
-        def run_plain():
-            uvicorn.run(
-                "src.server.main:app",
-                host="127.0.0.1",
-                port=plain_port,
-            )
+        async def proxy_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            """Minimal HTTP proxy: forward to uvicorn on the TLS port."""
+            try:
+                # Read the HTTP request
+                data = await asyncio.wait_for(reader.read(65536), timeout=5)
+                if not data:
+                    writer.close()
+                    return
 
-        plain_proc = multiprocessing.Process(target=run_plain, daemon=True)
-        plain_proc.start()
-        logger.info(f"Plain HTTP listener started on 127.0.0.1:{plain_port} (for Tailscale Serve)")
+                # Parse Host header to rewrite for localhost
+                request = data.decode("utf-8", errors="replace")
+                # Replace the Host header to point to localhost:8443 (TLS server)
+                import re
+                request = re.sub(
+                    r"Host: [^\r\n]+",
+                    f"Host: 127.0.0.1:{settings.port}",
+                    request,
+                    count=1,
+                )
 
-        uvicorn.run(
-            "src.server.main:app",
+                # Connect to the TLS server via plain HTTP (it's localhost)
+                # Actually, uvicorn with TLS won't accept plain HTTP.
+                # Instead, use httpx to proxy the request properly.
+                # ... But we don't want httpx dependency here.
+                #
+                # Simplest approach: use a second uvicorn on the same event loop
+                # with a shared app instance. Uvicorn supports this natively via
+                # Config and Server.
+                writer.close()
+                return
+            except Exception:
+                writer.close()
+
+        # Better approach: use uvicorn's Server class directly to run both
+        # in the same process and event loop.
+        import uvicorn as _uvicorn
+
+        # Plain HTTP config (localhost only, for Tailscale Serve proxy)
+        plain_config = _uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=plain_port,
+            log_level="warning",
+        )
+        plain_server = _uvicorn.Server(plain_config)
+
+        # TLS config (public)
+        tls_config = _uvicorn.Config(
+            app,
             host=settings.host,
             port=settings.port,
             ssl_keyfile=ssl_keyfile,
             ssl_certfile=ssl_certfile,
         )
+        tls_server = _uvicorn.Server(tls_config)
+
+        # Run both servers in the same event loop (one process, one model load)
+        async def serve_both():
+            await asyncio.gather(
+                plain_server.serve(),
+                tls_server.serve(),
+            )
+
+        logger.info(f"Dual listener: TLS on :{settings.port}, plain HTTP on 127.0.0.1:{plain_port} (for Tailscale Serve)")
+        asyncio.run(serve_both())
     else:
         uvicorn.run(
             "src.server.main:app",

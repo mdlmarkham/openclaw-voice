@@ -51,6 +51,13 @@ async def index():
     return response
 
 
+@router.get("/favicon.svg")
+@router.get("/favicon.ico")
+async def favicon():
+    """Serve favicon."""
+    return FileResponse(Path(__file__).resolve().parent.parent / "client" / "favicon.svg")
+
+
 @router.get("/health")
 async def health():
     """Health check — used by monitoring and client auto-reconnect."""

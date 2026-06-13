@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    
+
     <!-- Primary Meta Tags -->
     <title>OpenClaw Voice — Free Open-Source Voice Chat for AI Assistants</title>
     <meta name="title" content="OpenClaw Voice — Free Open-Source Voice Chat for AI Assistants">
@@ -12,7 +12,7 @@
     <meta name="author" content="Purple Horizons">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://openclawvoice.com/">
-    
+
     <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://openclawvoice.com/">
@@ -23,7 +23,7 @@
     <meta property="og:image:height" content="630">
     <meta property="og:site_name" content="OpenClaw Voice">
     <meta property="og:locale" content="en_US">
-    
+
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:url" content="https://openclawvoice.com/">
@@ -31,11 +31,11 @@
     <meta name="twitter:description" content="Talk to your AI like Alexa. Self-hosted, private, open-source. Browser-based voice with Whisper STT and ElevenLabs TTS.">
     <meta name="twitter:image" content="https://openclawvoice.com/og-image.png">
     <meta name="twitter:creator" content="@GianniDalerta">
-    
+
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>">
     <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>">
-    
+
     <!-- Structured Data -->
     <script type="application/ld+json">
     {
@@ -72,10 +72,10 @@
         "license": "https://opensource.org/licenses/MIT"
     }
     </script>
-    
+
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
@@ -87,23 +87,23 @@
             justify-content: center;
             padding: 2rem;
         }
-        
+
         .container {
             max-width: 900px;
             text-align: center;
         }
-        
+
         .logo {
             font-size: 5rem;
             margin-bottom: 1rem;
             animation: float 3s ease-in-out infinite;
         }
-        
+
         @keyframes float {
             0%, 100% { transform: translateY(0); }
             50% { transform: translateY(-10px); }
         }
-        
+
         h1 {
             font-size: 2.8rem;
             margin-bottom: 0.5rem;
@@ -112,19 +112,19 @@
             -webkit-text-fill-color: transparent;
             background-clip: text;
         }
-        
+
         .tagline {
             font-size: 1.3rem;
             color: #a0a0a0;
             margin-bottom: 1rem;
         }
-        
+
         .sub-tagline {
             font-size: 1rem;
             color: #707070;
             margin-bottom: 2rem;
         }
-        
+
         .features {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -132,26 +132,26 @@
             margin: 3rem 0;
             text-align: left;
         }
-        
+
         .feature {
             background: rgba(255, 255, 255, 0.05);
             border-radius: 12px;
             padding: 1.5rem;
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
-        
+
         .feature h3 {
             color: #e94560;
             margin-bottom: 0.5rem;
             font-size: 1.1rem;
         }
-        
+
         .feature p {
             color: #a0a0a0;
             font-size: 0.95rem;
             line-height: 1.5;
         }
-        
+
         .cta-buttons {
             display: flex;
             gap: 1rem;
@@ -159,7 +159,7 @@
             flex-wrap: wrap;
             margin-top: 2rem;
         }
-        
+
         .btn {
             display: inline-flex;
             align-items: center;
@@ -171,29 +171,29 @@
             text-decoration: none;
             transition: transform 0.2s, box-shadow 0.2s;
         }
-        
+
         .btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
         }
-        
+
         .btn-primary {
             background: linear-gradient(90deg, #e94560, #ff6b6b);
             color: white;
         }
-        
+
         .btn-secondary {
             background: rgba(255, 255, 255, 0.1);
             color: white;
             border: 1px solid rgba(255, 255, 255, 0.2);
         }
-        
+
         .stack {
             margin-top: 3rem;
             padding-top: 2rem;
             border-top: 1px solid rgba(255, 255, 255, 0.1);
         }
-        
+
         .stack h3 {
             color: #a0a0a0;
             font-size: 0.9rem;
@@ -201,7 +201,7 @@
             letter-spacing: 2px;
             margin-bottom: 1rem;
         }
-        
+
         .stack-items {
             display: flex;
             gap: 2rem;
@@ -210,62 +210,62 @@
             color: #666;
             font-size: 0.95rem;
         }
-        
+
         .stack-item {
             display: flex;
             align-items: center;
             gap: 0.5rem;
         }
-        
+
         .use-cases {
             margin-top: 3rem;
             text-align: left;
         }
-        
+
         .use-cases h2 {
             text-align: center;
             color: #fff;
             margin-bottom: 1.5rem;
             font-size: 1.5rem;
         }
-        
+
         .use-case-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 1rem;
         }
-        
+
         .use-case {
             background: rgba(255, 255, 255, 0.03);
             padding: 1rem 1.5rem;
             border-radius: 8px;
             border-left: 3px solid #e94560;
         }
-        
+
         .use-case strong {
             color: #fff;
         }
-        
+
         .use-case span {
             color: #888;
             font-size: 0.9rem;
         }
-        
+
         footer {
             margin-top: 4rem;
             color: #666;
             font-size: 0.9rem;
         }
-        
+
         footer a {
             color: #e94560;
             text-decoration: none;
         }
-        
+
         footer a:hover {
             text-decoration: underline;
         }
-        
+
         @media (max-width: 600px) {
             h1 { font-size: 2rem; }
             .tagline { font-size: 1.1rem; }
@@ -279,7 +279,7 @@
         <h1>OpenClaw Voice</h1>
         <p class="tagline">Talk to your AI like you talk to Alexa</p>
         <p class="sub-tagline">Self-hosted • Private • Open Source • Free</p>
-        
+
         <div class="features">
             <div class="feature">
                 <h3>🎤 Local Speech-to-Text</h3>
@@ -306,7 +306,7 @@
                 <p>Run on your own hardware. Your data stays on your servers. No subscriptions, no vendor lock-in.</p>
             </div>
         </div>
-        
+
         <div class="cta-buttons">
             <a href="https://github.com/Purple-Horizons/openclaw-voice" class="btn btn-primary">
                 ⭐ View on GitHub
@@ -315,7 +315,7 @@
                 🦞 OpenClaw
             </a>
         </div>
-        
+
         <div class="use-cases">
             <h2>Built For</h2>
             <div class="use-case-grid">
@@ -337,7 +337,7 @@
                 </div>
             </div>
         </div>
-        
+
         <div class="stack">
             <h3>Built With</h3>
             <div class="stack-items">
@@ -348,12 +348,12 @@
                 <span class="stack-item">⚡ FastAPI</span>
             </div>
         </div>
-        
+
         <footer>
             <p>Part of the <a href="https://openclaw.ai">OpenClaw</a> ecosystem</p>
             <p>Built by <a href="https://purplehorizons.io">Purple Horizons</a> in Miami 🌴</p>
             <p style="margin-top: 1rem; font-size: 0.8rem; color: #555;">
-                MIT License • <a href="https://github.com/Purple-Horizons/openclaw-voice">Source Code</a> • 
+                MIT License • <a href="https://github.com/Purple-Horizons/openclaw-voice">Source Code</a> •
                 <a href="https://github.com/Purple-Horizons/openclaw-voice/issues">Report Issues</a>
             </p>
         </footer>

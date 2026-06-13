@@ -10,7 +10,6 @@ WebSocket server that handles:
 - Health check, auto-reconnect support, graceful error handling
 """
 
-import asyncio
 import base64
 import json
 import os
@@ -80,6 +79,7 @@ app = FastAPI(title="OpenClaw Voice", version="0.3.0")
 
 # CORS for cross-origin WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -113,12 +113,16 @@ async def startup():
     logger.info(f"Loading STT model: {settings.stt_model}")
     stt = WhisperSTT(model_name=settings.stt_model, device=settings.stt_device)
     if stt._backend == "mock":
-        logger.warning("⚠️ STT is in MOCK mode — install faster-whisper or openai-whisper for real speech recognition")
+        logger.warning(
+            "⚠️ STT is in MOCK mode — install faster-whisper or openai-whisper for real speech recognition"
+        )
 
     logger.info(f"Loading TTS model: {settings.tts_model}")
     tts = ChatterboxTTS(voice_sample=settings.tts_voice)
     if tts._backend == "mock":
-        logger.error("❌ No TTS backend available — set ELEVENLABS_API_KEY or install a local TTS backend")
+        logger.error(
+            "❌ No TTS backend available — set ELEVENLABS_API_KEY or install a local TTS backend"
+        )
     elif tts._backend == "elevenlabs":
         pass
     else:
@@ -131,7 +135,9 @@ async def startup():
     backend_configured = bool(gateway_url and gateway_token) or bool(openai_key)
 
     if not backend_configured:
-        logger.error("❌ No AI backend configured — set OPENAI_API_KEY or OPENCLAW_GATEWAY_URL+OPENCLAW_GATEWAY_TOKEN")
+        logger.error(
+            "❌ No AI backend configured — set OPENAI_API_KEY or OPENCLAW_GATEWAY_URL+OPENCLAW_GATEWAY_TOKEN"
+        )
 
     if gateway_url and gateway_token:
         logger.info(f"🦞 Connecting to OpenClaw gateway: {gateway_url}")
@@ -143,8 +149,10 @@ async def startup():
             system_prompt=settings.system_prompt,
         )
     else:
-        logger.warning("⚠️ Using direct OpenAI backend — conversation history is global (shared across all clients). "
-                       "For multi-user deployments, use OpenClaw gateway which manages per-session memory.")
+        logger.warning(
+            "⚠️ Using direct OpenAI backend — conversation history is global (shared across all clients). "
+            "For multi-user deployments, use OpenClaw gateway which manages per-session memory."
+        )
         logger.info(f"Connecting to backend: {settings.backend_type}")
         backend = AIBackend(
             backend_type=settings.backend_type,
@@ -160,9 +168,10 @@ async def startup():
     logger.info("✅ OpenClaw Voice server ready!")
 
 
-
 # Sentence separators for streaming TTS
-SENTENCE_SEPS = ['. ', '! ', '? ', '.\n', '!\n', '?\n']
+SENTENCE_SEPS = [". ", "! ", "? ", ".\n", "!\n", "?\n"]
+
+
 async def speak_sentence(
     websocket: WebSocket,
     text: str,
@@ -182,12 +191,14 @@ async def speak_sentence(
     try:
         async for audio_chunk in tts.synthesize_stream(speech_text):
             audio_b64 = base64.b64encode(audio_chunk).decode()
-            await websocket.send_json({
-                "type": "audio_chunk",
-                "data": audio_b64,
-                "sample_rate": 24000,
-                "seq": seq,
-            })
+            await websocket.send_json(
+                {
+                    "type": "audio_chunk",
+                    "data": audio_b64,
+                    "sample_rate": 24000,
+                    "seq": seq,
+                }
+            )
     except Exception as tts_err:
         logger.error(f"TTS error: {tts_err}")
     await websocket.send_json({"type": "sentence_end", "seq": seq})
@@ -205,20 +216,22 @@ async def index():
 @app.get("/health")
 async def health():
     """Health check — used by monitoring and client auto-reconnect."""
-    return JSONResponse({
-        "status": "ok",
-        "uptime_seconds": round(time.time() - _startup_time, 1) if _startup_time else 0,
-        "stt": stt.status() if stt else {"backend": "not_loaded"},
-        "tts": tts.status() if tts else {"backend": "not_loaded"},
-        "backend": backend.backend_type if backend else "not_loaded",
-        "vad": "loaded" if vad else "not_loaded",
-        "config": {
-            "stt_model": settings.stt_model,
-            "tts_model": settings.tts_model,
-            "supertonic_model": os.getenv("SUPERTONIC_MODEL", "supertonic-2"),
-            "supertonic_voice": os.getenv("SUPERTONIC_VOICE", "F2"),
-        },
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "uptime_seconds": round(time.time() - _startup_time, 1) if _startup_time else 0,
+            "stt": stt.status() if stt else {"backend": "not_loaded"},
+            "tts": tts.status() if tts else {"backend": "not_loaded"},
+            "backend": backend.backend_type if backend else "not_loaded",
+            "vad": "loaded" if vad else "not_loaded",
+            "config": {
+                "stt_model": settings.stt_model,
+                "tts_model": settings.tts_model,
+                "supertonic_model": os.getenv("SUPERTONIC_MODEL", "supertonic-2"),
+                "supertonic_voice": os.getenv("SUPERTONIC_VOICE", "F2"),
+            },
+        }
+    )
 
 
 @app.post("/api/keys")
@@ -238,11 +251,13 @@ async def create_api_key(
                 return {"error": "Invalid master key"}
 
     from .auth import PRICING_TIERS
+
     if tier not in PRICING_TIERS:
         return {"error": f"Invalid tier. Options: {list(PRICING_TIERS.keys())}"}
     tier_config = PRICING_TIERS[tier]
     plaintext_key, api_key = token_manager.generate_key(
-        name=name, tier=tier,
+        name=name,
+        tier=tier,
         rate_limit=tier_config["rate_limit"],
         monthly_minutes=tier_config["monthly_minutes"],
     )
@@ -269,8 +284,7 @@ async def get_usage(api_key: str):
 @app.websocket("/voice/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Handle voice WebSocket connections with improved error recovery."""
-    api_key_str = websocket.query_params.get("api_key") or \
-                  websocket.headers.get("x-api-key")
+    api_key_str = websocket.query_params.get("api_key") or websocket.headers.get("x-api-key")
     api_key: Optional[APIKey] = None
 
     if settings.require_auth:
@@ -328,13 +342,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     session_agent = msg["agent"]
                     logger.info(f"Agent selected: {session_agent}")
                     # Switch TTS voice to match agent persona
-                    if session_agent in ChatterboxTTS.AGENT_VOICE_MAP and tts._backend == "supertonic":
+                    if (
+                        session_agent in ChatterboxTTS.AGENT_VOICE_MAP
+                        and tts._backend == "supertonic"
+                    ):
                         new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]
                         if new_voice != tts._supertonic_voice:
                             try:
-                                tts._supertonic_style = tts._supertonic_tts.get_voice_style(new_voice)
+                                tts._supertonic_style = tts._supertonic_tts.get_voice_style(
+                                    new_voice
+                                )
                                 tts._supertonic_voice = new_voice
-                                logger.info(f"Switched TTS voice to {new_voice} for agent {session_agent}")
+                                logger.info(
+                                    f"Switched TTS voice to {new_voice} for agent {session_agent}"
+                                )
                             except Exception as e:
                                 logger.warning(f"Failed to switch voice to {new_voice}: {e}")
                 await websocket.send_json({"type": "listening_started"})
@@ -347,18 +368,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     try:
                         audio_data = np.concatenate(audio_buffer)
                         audio_duration = len(audio_data) / settings.sample_rate
-                        logger.info(f"Audio received: {audio_duration:.1f}s, {len(audio_buffer)} chunks")
+                        logger.info(
+                            f"Audio received: {audio_duration:.1f}s, {len(audio_buffer)} chunks"
+                        )
 
                         t_stt_start = time.monotonic()
                         logger.debug("Transcribing audio...")
                         transcript = await stt.transcribe(audio_data)
                         t_stt = time.monotonic() - t_stt_start
 
-                        await websocket.send_json({
-                            "type": "transcript",
-                            "text": transcript,
-                            "final": True,
-                        })
+                        await websocket.send_json(
+                            {
+                                "type": "transcript",
+                                "text": transcript,
+                                "final": True,
+                            }
+                        )
                         logger.info(f"STT: {t_stt:.2f}s | Transcript: {transcript[:80]}")
 
                         if transcript.strip():
@@ -380,10 +405,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                 if t_first_token is None:
                                     t_first_token = time.monotonic() - t_llm_start
 
-                                await websocket.send_json({
-                                    "type": "response_chunk",
-                                    "text": chunk,
-                                })
+                                await websocket.send_json(
+                                    {
+                                        "type": "response_chunk",
+                                        "text": chunk,
+                                    }
+                                )
 
                                 # Synthesize completed sentences
                                 while any(sep in sentence_buffer for sep in SENTENCE_SEPS):
@@ -406,33 +433,39 @@ async def websocket_endpoint(websocket: WebSocket):
                                             sentence_count += 1
                                             if t_first_audio is None:
                                                 t_first_audio = time.monotonic() - t_start
-                                                logger.info(f"First audio: {t_first_audio:.2f}s (STT={t_stt:.2f}s, first_token={t_first_token:.2f}s, TTS_1st={tts_time:.2f}s)")
+                                                logger.info(
+                                                    f"First audio: {t_first_audio:.2f}s (STT={t_stt:.2f}s, first_token={t_first_token:.2f}s, TTS_1st={tts_time:.2f}s)"
+                                                )
                                     else:
                                         break
 
                             # Handle remaining text
                             if sentence_buffer.strip():
                                 t_tts_start = time.monotonic()
-                                await speak_sentence(
-                                    websocket, sentence_buffer.strip(), audio_seq
-                                )
+                                await speak_sentence(websocket, sentence_buffer.strip(), audio_seq)
                                 sentence_count += 1
 
                             t_total = time.monotonic() - t_start
                             t_llm_total = time.monotonic() - t_llm_start
-                            await websocket.send_json({
-                                "type": "response_complete",
-                                "text": full_response,
-                                "latency": {
-                                    "stt_ms": round(t_stt * 1000),
-                                    "first_token_ms": round(t_first_token * 1000) if t_first_token else None,
-                                    "first_audio_ms": round(t_first_audio * 1000) if t_first_audio else None,
-                                    "llm_total_ms": round(t_llm_total * 1000),
-                                    "total_ms": round(t_total * 1000),
-                                    "audio_duration_s": round(audio_duration, 1),
-                                    "sentences": sentence_count,
-                                },
-                            })
+                            await websocket.send_json(
+                                {
+                                    "type": "response_complete",
+                                    "text": full_response,
+                                    "latency": {
+                                        "stt_ms": round(t_stt * 1000),
+                                        "first_token_ms": round(t_first_token * 1000)
+                                        if t_first_token
+                                        else None,
+                                        "first_audio_ms": round(t_first_audio * 1000)
+                                        if t_first_audio
+                                        else None,
+                                        "llm_total_ms": round(t_llm_total * 1000),
+                                        "total_ms": round(t_total * 1000),
+                                        "audio_duration_s": round(audio_duration, 1),
+                                        "sentences": sentence_count,
+                                    },
+                                }
+                            )
                             logger.info(
                                 f"Pipeline: {t_total:.2f}s total "
                                 f"(STT={t_stt:.2f}s, LLM={t_llm_total:.2f}s, "
@@ -443,10 +476,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     except Exception as inner_err:
                         logger.error(f"Processing error: {inner_err}")
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": str(inner_err),
-                        })
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": str(inner_err),
+                            }
+                        )
 
                 audio_buffer = []
                 await websocket.send_json({"type": "listening_stopped"})
@@ -459,7 +494,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Cap audio buffer to prevent unbounded memory growth
                     total_samples = sum(len(chunk) for chunk in audio_buffer) + len(audio_np)
                     if total_samples > MAX_AUDIO_BUFFER_SAMPLES:
-                        logger.warning(f"Audio buffer cap reached ({total_samples} samples), forcing stop_listening")
+                        logger.warning(
+                            f"Audio buffer cap reached ({total_samples} samples), forcing stop_listening"
+                        )
                         audio_buffer.append(audio_np)
                         # Trigger processing instead of crashing
                         is_listening = False
@@ -469,10 +506,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     if vad and len(audio_np) > 0:
                         has_speech = vad.is_speech(audio_np)
-                        await websocket.send_json({
-                            "type": "vad_status",
-                            "speech_detected": has_speech,
-                        })
+                        await websocket.send_json(
+                            {
+                                "type": "vad_status",
+                                "speech_detected": has_speech,
+                            }
+                        )
                 except Exception as audio_err:
                     logger.warning(f"Audio decode error: {audio_err}")
 
@@ -503,6 +542,7 @@ if client_dir.exists():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "src.server.main:app",
         host=settings.host,

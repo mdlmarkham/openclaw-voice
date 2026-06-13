@@ -3,7 +3,6 @@ Speech-to-Text module using Whisper.
 """
 
 import asyncio
-from typing import Optional
 
 import numpy as np
 from loguru import logger
@@ -11,7 +10,7 @@ from loguru import logger
 
 class WhisperSTT:
     """Whisper-based Speech-to-Text."""
-    
+
     def __init__(
         self,
         model_name: str = "base",
@@ -24,15 +23,16 @@ class WhisperSTT:
         self.model = None
         self._backend = "mock"
         self._load_model()
-    
+
     def _load_model(self):
         """Load the Whisper model."""
         # Try faster-whisper first
         try:
             from faster_whisper import WhisperModel
-            
+
             if self.device == "auto":
                 import torch
+
                 if torch.cuda.is_available():
                     self.device = "cuda"
                     compute_type = "float16"
@@ -46,7 +46,7 @@ class WhisperSTT:
                 compute_type = "float16"
             else:
                 compute_type = "int8"
-            
+
             logger.info(f"Loading faster-whisper {self.model_name} on {self.device}")
             self.model = WhisperModel(
                 self.model_name,
@@ -60,15 +60,16 @@ class WhisperSTT:
             logger.warning("faster-whisper not available")
         except Exception as e:
             logger.warning(f"faster-whisper failed: {e}")
-        
+
         # Try openai-whisper
         try:
             import whisper
-            
+
             if self.device == "auto":
                 import torch
+
                 self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            
+
             logger.info(f"Loading openai-whisper {self.model_name}")
             self.model = whisper.load_model(self.model_name, device=self.device)
             self._backend = "openai-whisper"
@@ -78,11 +79,11 @@ class WhisperSTT:
             logger.warning("openai-whisper not available")
         except Exception as e:
             logger.warning(f"openai-whisper failed: {e}")
-        
+
         # Mock mode for testing
         logger.warning("⚠️ No STT backend - using mock mode")
         self._backend = "mock"
-    
+
     async def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe audio to text."""
         loop = asyncio.get_event_loop()
@@ -106,11 +107,11 @@ class WhisperSTT:
                 vad_filter=True,
             )
             return " ".join(segment.text for segment in segments).strip()
-        
+
         elif self._backend == "openai-whisper":
             result = self.model.transcribe(audio, language=self.language)
             return result["text"].strip()
-        
+
         else:
             # Mock mode - return placeholder
             logger.debug(f"Mock STT: received {len(audio)} samples")

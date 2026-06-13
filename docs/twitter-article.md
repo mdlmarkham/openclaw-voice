@@ -73,7 +73,7 @@ Now your voice conversations route through your full agent.
 
 ## Why Open Source?
 
-Because voice AI shouldn't be a subscription. 
+Because voice AI shouldn't be a subscription.
 
 The models exist. The tools exist. The only thing missing was someone putting them together in a way that doesn't require a PhD in audio engineering.
 

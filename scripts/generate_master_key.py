@@ -4,7 +4,7 @@ Generate a secure master API key for OpenClaw Voice.
 
 Usage:
     python scripts/generate_master_key.py
-    
+
 Add the output to your .env file or deployment environment.
 """
 
@@ -18,7 +18,7 @@ def generate_master_key() -> str:
 
 if __name__ == "__main__":
     key = generate_master_key()
-    
+
     print("=" * 60)
     print("OpenClaw Voice Master Key")
     print("=" * 60)

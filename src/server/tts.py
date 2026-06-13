@@ -11,7 +11,6 @@ import asyncio
 import io
 import os
 from typing import Optional, AsyncGenerator
-from pathlib import Path
 
 import numpy as np
 from loguru import logger
@@ -57,30 +56,40 @@ class ChatterboxTTS:
         if elevenlabs_key:
             try:
                 from elevenlabs import ElevenLabs
+
                 self._elevenlabs_client = ElevenLabs(api_key=elevenlabs_key)
                 self._backend = "elevenlabs"
                 logger.info("✅ ElevenLabs TTS ready")
                 return
             except ImportError:
-                logger.warning("ElevenLabs SDK not installed — add 'elevenlabs' to requirements.txt")
+                logger.warning(
+                    "ElevenLabs SDK not installed — add 'elevenlabs' to requirements.txt"
+                )
             except Exception as e:
                 logger.warning(f"ElevenLabs failed: {e}")
 
         # 2. Supertonic (local CPU, ONNX, fast, 31 languages)
         try:
             from supertonic import TTS
+
             self._supertonic_tts = TTS(model=self._supertonic_model)
             self._supertonic_sr = self._supertonic_tts.sample_rate
             # Load voice style
             if self._supertonic_voice in self._supertonic_tts.voice_style_names:
-                self._supertonic_style = self._supertonic_tts.get_voice_style(self._supertonic_voice)
+                self._supertonic_style = self._supertonic_tts.get_voice_style(
+                    self._supertonic_voice
+                )
             else:
-                logger.warning(f"Supertonic voice '{self._supertonic_voice}' not found, using first available")
+                logger.warning(
+                    f"Supertonic voice '{self._supertonic_voice}' not found, using first available"
+                )
                 self._supertonic_style = self._supertonic_tts.get_voice_style(
                     self._supertonic_tts.voice_style_names[0]
                 )
             self._backend = "supertonic"
-            logger.info(f"✅ Supertonic TTS ready (model={self._supertonic_model}, voice={self._supertonic_voice}, sr={self._supertonic_sr}Hz)")
+            logger.info(
+                f"✅ Supertonic TTS ready (model={self._supertonic_model}, voice={self._supertonic_voice}, sr={self._supertonic_sr}Hz)"
+            )
             return
         except ImportError:
             logger.debug("supertonic not installed, skipping")
@@ -90,6 +99,7 @@ class ChatterboxTTS:
         # 3. Edge TTS (cloud, free, fast)
         try:
             import edge_tts  # noqa: F401
+
             self._backend = "edge"
             logger.info("✅ Edge TTS ready (Microsoft, free, cloud)")
             return
@@ -101,6 +111,7 @@ class ChatterboxTTS:
         # 4. Chatterbox (GPU local)
         try:
             from chatterbox.tts import ChatterboxTTS as CBModel
+
             logger.info("Loading Chatterbox TTS...")
             self.model = CBModel.from_pretrained(device=self._get_device())
             self._backend = "chatterbox"
@@ -114,6 +125,7 @@ class ChatterboxTTS:
         # 5. XTTS (GPU local)
         try:
             from TTS.api import TTS
+
             logger.info("Loading Coqui XTTS...")
             self.model = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
             self._backend = "xtts"
@@ -132,6 +144,7 @@ class ChatterboxTTS:
             return self.device
         try:
             import torch
+
             if torch.cuda.is_available():
                 return "cuda"
             elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -154,12 +167,14 @@ class ChatterboxTTS:
         """Return TTS status dict for health checks. Avoids reaching into private attrs."""
         result = {"backend": self._backend}
         if self._backend == "supertonic":
-            result.update({
-                "model": self._supertonic_model,
-                "voice": self._supertonic_voice,
-                "sample_rate": self._supertonic_sr,
-                "agent_voice_map": self.AGENT_VOICE_MAP,
-            })
+            result.update(
+                {
+                    "model": self._supertonic_model,
+                    "voice": self._supertonic_voice,
+                    "sample_rate": self._supertonic_sr,
+                    "agent_voice_map": self.AGENT_VOICE_MAP,
+                }
+            )
         elif self._backend == "edge":
             result["edge_voice"] = self._edge_voice
         elif self._backend == "elevenlabs":
@@ -205,9 +220,9 @@ class ChatterboxTTS:
             else:
                 logger.warning("No fallback TTS available")
 
-    def _get_fallback_backend(self) -> Optional['ChatterboxTTS']:
+    def _get_fallback_backend(self) -> Optional["ChatterboxTTS"]:
         """Get a fallback TTS backend if the primary fails."""
-        if self._backend == 'supertonic':
+        if self._backend == "supertonic":
             # Try Edge TTS as fallback — just delegate to our own _synthesize_edge
             # by creating a lightweight wrapper that uses the same instance
             return _EdgeFallback(self._edge_voice)
@@ -232,7 +247,9 @@ class ChatterboxTTS:
             # Supertonic is synchronous but fast (~1-2x realtime on CPU)
             try:
                 loop = asyncio.get_event_loop()
-                audio_float32 = await loop.run_in_executor(None, self._synthesize_supertonic_sync, text)
+                audio_float32 = await loop.run_in_executor(
+                    None, self._synthesize_supertonic_sync, text
+                )
                 if audio_float32 is not None and len(audio_float32) > 0:
                     audio_int16 = (audio_float32 * 32768.0).clip(-32768, 32767).astype(np.int16)
                     yield audio_int16.tobytes()
@@ -268,6 +285,7 @@ class ChatterboxTTS:
             # Use soxr (0.002s) instead of librosa (4.8s) — 2500x faster
             if self._supertonic_sr != 24000:
                 import soxr
+
                 audio = soxr.resample(audio, self._supertonic_sr, 24000)
             return audio.astype(np.float32)
         except Exception as e:
@@ -294,9 +312,11 @@ class ChatterboxTTS:
             audio_buffer.seek(0)
 
             import soundfile as sf
+
             data, sr = sf.read(audio_buffer)
             if sr != 24000:
                 import soxr
+
                 data = soxr.resample(data, sr, 24000)
             return data.astype(np.float32)
         except Exception as e:
@@ -352,6 +372,7 @@ class _EdgeFallback:
         """Edge TTS streaming fallback."""
         try:
             import edge_tts
+
             communicate = edge_tts.Communicate(text, self._edge_voice)
             audio_buffer = io.BytesIO()
             async for chunk in communicate.stream():
@@ -360,9 +381,11 @@ class _EdgeFallback:
             audio_buffer.seek(0)
 
             import soundfile as sf
+
             data, sr = sf.read(audio_buffer)
             if sr != 24000:
                 import soxr
+
                 data = soxr.resample(data, sr, 24000)
             audio_int16 = (data * 32768.0).clip(-32768, 32767).astype(np.int16)
             yield audio_int16.tobytes()

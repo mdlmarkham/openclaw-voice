@@ -154,7 +154,7 @@ Mobile browsers require HTTPS for microphone access.
 server {
     listen 443 ssl;
     server_name voice.yourdomain.com;
-    
+
     location / {
         proxy_pass http://127.0.0.1:8765;
         proxy_http_version 1.1;

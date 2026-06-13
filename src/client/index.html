@@ -10,7 +10,7 @@
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
@@ -22,13 +22,13 @@
             justify-content: center;
             padding: 20px;
         }
-        
+
         .container {
             max-width: 600px;
             width: 100%;
             text-align: center;
         }
-        
+
         h1 {
             font-size: 2.5rem;
             margin-bottom: 10px;
@@ -36,12 +36,12 @@
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
-        
+
         .subtitle {
             color: #888;
             margin-bottom: 10px;
         }
-        
+
         .agent-selector {
             display: flex;
             align-items: center;
@@ -49,14 +49,14 @@
             gap: 10px;
             margin-bottom: 30px;
         }
-        
+
         .agent-selector label {
             font-size: 0.85rem;
             color: #888;
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
-        
+
         .agent-selector select {
             background: rgba(255, 255, 255, 0.08);
             color: #fff;
@@ -68,16 +68,16 @@
             outline: none;
             min-width: 160px;
         }
-        
+
         .agent-selector select:hover {
             border-color: #c9a227;
         }
-        
+
         .agent-selector select:focus {
             border-color: #c9a227;
             box-shadow: 0 0 0 2px rgba(201, 162, 39, 0.2);
         }
-        
+
         .voice-button {
             width: 140px;
             height: 140px;
@@ -97,33 +97,33 @@
             margin: 0 auto 10px;
             position: relative;
         }
-        
+
         .voice-button:hover {
             transform: scale(1.05);
             box-shadow: 0 15px 50px rgba(201, 162, 39, 0.4);
         }
-        
+
         .voice-button:active,
         .voice-button.listening {
             transform: scale(0.95);
             background: linear-gradient(135deg, #a6841a 0%, #8a6d15 100%);
         }
-        
+
         .voice-button.listening {
             animation: pulse 1.5s infinite;
         }
-        
+
         .voice-button:disabled {
             opacity: 0.4;
             cursor: not-allowed;
             transform: none !important;
         }
-        
+
         @keyframes pulse {
             0%, 100% { box-shadow: 0 10px 40px rgba(201, 162, 39, 0.3); }
             50% { box-shadow: 0 10px 60px rgba(201, 162, 39, 0.6); }
         }
-        
+
         /* Waveform visualizer */
         .waveform-container {
             width: 200px;
@@ -140,7 +140,7 @@
             height: 100%;
             border-radius: 8px;
         }
-        
+
         .continuous-toggle {
             display: flex;
             align-items: center;
@@ -148,19 +148,19 @@
             gap: 12px;
             margin-bottom: 20px;
         }
-        
+
         .toggle-switch {
             position: relative;
             width: 56px;
             height: 30px;
         }
-        
+
         .toggle-switch input {
             opacity: 0;
             width: 0;
             height: 0;
         }
-        
+
         .toggle-slider {
             position: absolute;
             cursor: pointer;
@@ -172,7 +172,7 @@
             border-radius: 30px;
             transition: 0.3s;
         }
-        
+
         .toggle-slider:before {
             position: absolute;
             content: "";
@@ -184,40 +184,40 @@
             border-radius: 50%;
             transition: 0.3s;
         }
-        
+
         .toggle-switch input:checked + .toggle-slider {
             background: #c9a227;
         }
-        
+
         .toggle-switch input:checked + .toggle-slider:before {
             transform: translateX(26px);
         }
-        
+
         .toggle-label {
             font-weight: 600;
             color: #fff;
         }
-        
+
         .toggle-hint {
             color: #666;
             font-size: 0.85rem;
         }
-        
+
         .status {
             font-size: 1.1rem;
             color: #888;
             margin-bottom: 20px;
             min-height: 30px;
         }
-        
+
         .status.active {
             color: #c9a227;
         }
-        
+
         .status.error {
             color: #ff4444;
         }
-        
+
         .transcript-box {
             background: rgba(255, 255, 255, 0.05);
             border-radius: 12px;
@@ -228,7 +228,7 @@
             max-height: 400px;
             overflow-y: auto;
         }
-        
+
         .transcript-box h3 {
             font-size: 0.9rem;
             color: #666;
@@ -236,22 +236,22 @@
             text-transform: uppercase;
             letter-spacing: 0.1em;
         }
-        
+
         .transcript-box p {
             font-size: 1rem;
             line-height: 1.6;
             color: #ccc;
             margin-bottom: 8px;
         }
-        
+
         .transcript-box p.user {
             color: #c9a227;
         }
-        
+
         .transcript-box p.assistant {
             color: #4fc3f7;
         }
-        
+
         .transcript-box code {
             background: rgba(255, 255, 255, 0.1);
             padding: 2px 6px;
@@ -259,30 +259,30 @@
             font-family: 'SF Mono', Monaco, monospace;
             font-size: 0.9em;
         }
-        
+
         .transcript-box code.block {
             display: block;
             padding: 10px;
             margin: 8px 0;
             background: rgba(0, 0, 0, 0.3);
         }
-        
+
         .transcript-box a {
             color: #c9a227;
             text-decoration: none;
         }
-        
+
         .transcript-box a:hover {
             text-decoration: underline;
         }
-        
+
         .controls {
             display: flex;
             gap: 10px;
             justify-content: center;
             margin-top: 20px;
         }
-        
+
         .controls button {
             padding: 10px 20px;
             border: 1px solid #444;
@@ -293,17 +293,17 @@
             font-size: 0.9rem;
             transition: all 0.2s;
         }
-        
+
         .controls button:hover {
             border-color: #c9a227;
             color: #c9a227;
         }
-        
+
         .error {
             color: #ff4444;
             margin-top: 20px;
         }
-        
+
         .instructions {
             margin-top: 40px;
             padding: 20px;
@@ -312,7 +312,7 @@
             color: #666;
             font-size: 0.9rem;
         }
-        
+
         .instructions code {
             background: rgba(201, 162, 39, 0.1);
             color: #c9a227;
@@ -331,7 +331,7 @@
         .conn-indicator.ok { background: #4caf50; }
         .conn-indicator.warn { background: #ff9800; }
         .conn-indicator.err { background: #f44336; }
-        
+
         .config-panel {
             margin-top: 10px;
             padding: 12px 16px;
@@ -362,7 +362,7 @@
         }
         .config-panel .config-ok { color: #4caf50; }
         .config-panel .config-warn { color: #ff9800; }
-        
+
         /* Mobile responsive */
         @media (max-width: 480px) {
             .container {
@@ -398,7 +398,7 @@
     <div class="container">
         <h1>🧠 Métis Voice</h1>
         <p class="subtitle">Wisdom companion — speak freely</p>
-        
+
         <div class="agent-selector">
             <label for="agentSelect">Agent:</label>
             <select id="agentSelect">
@@ -410,16 +410,16 @@
                 <option value="mara">🌙 Mara</option>
             </select>
         </div>
-        
+
         <button class="voice-button" id="voiceBtn">
             <span id="voiceBtnIcon">🎤</span>
             <span id="voiceBtnText">Hold to Talk</span>
         </button>
-        
+
         <div class="waveform-container" id="waveformContainer">
             <canvas class="waveform-canvas" id="waveformCanvas"></canvas>
         </div>
-        
+
         <div class="continuous-toggle">
             <label class="toggle-switch">
                 <input type="checkbox" id="continuousMode">
@@ -428,9 +428,9 @@
             <span class="toggle-label">Continuous Mode</span>
             <span class="toggle-hint">(hands-free)</span>
         </div>
-        
+
         <p class="status" id="status"><span class="conn-indicator warn" id="connDot"></span>Connecting...</p>
-        
+
         <div class="config-panel" id="configPanel">
             <div class="config-item"><span class="config-label">STT:</span> <span class="config-value" id="cfgStt">—</span></div>
             <div class="config-item"><span class="config-label">TTS:</span> <span class="config-value" id="cfgTts">—</span></div>
@@ -438,19 +438,19 @@
             <div class="config-item"><span class="config-label">Backend:</span> <span class="config-value" id="cfgBackend">—</span></div>
             <div class="config-item"><span class="config-label">Uptime:</span> <span class="config-value" id="cfgUptime">—</span></div>
         </div>
-        
+
         <div class="transcript-box">
             <h3>Conversation</h3>
             <div id="transcript"></div>
         </div>
-        
+
         <div class="controls">
             <button id="clearBtn">Clear History</button>
         </div>
-        
+
         <p class="error" id="error"></p>
         <p id="debug" style="color:#666;font-size:0.7rem;margin-top:4px"></p>
-        
+
         <div class="instructions">
             <p><strong>Push-to-talk:</strong> Hold the button and speak. Release to send.</p>
             <p style="margin-top: 10px;"><strong>Continuous mode:</strong> Toggle ON for hands-free. Tap to start, auto-listens after each response.</p>
@@ -470,7 +470,7 @@
         const connDot = document.getElementById('connDot');
         const waveformCanvas = document.getElementById('waveformCanvas');
         const waveformCtx = waveformCanvas.getContext('2d');
-        
+
         let ws = null;
         let mediaRecorder = null;
         let audioContext = null;
@@ -486,7 +486,7 @@
         let silenceThreshold = 2000;  // 2 seconds — more forgiving for natural pauses
         let silenceTimer = null;
         let serverHealthy = false;
-        
+
         // Get API key from URL params or localStorage
         function getApiKey() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -502,19 +502,19 @@
         function setServerHost(host) {
             localStorage.setItem('openclaw_server', host);
         }
-        
+
         const agentSelect = document.getElementById('agentSelect');
-        
+
         function updateConnStatus(state) {
             // state: 'ok', 'warn', 'err'
             connDot.className = 'conn-indicator ' + state;
         }
-        
+
         function setStatus(text, active = false, isError = false) {
             statusEl.textContent = text;
             statusEl.className = isError ? 'status error' : (active ? 'status active' : 'status');
         }
-        
+
         // ── Health check ────────────────────────────────────────
         async function checkHealth() {
             try {
@@ -533,7 +533,7 @@
             serverHealthy = false;
             return null;
         }
-        
+
         // ── WebSocket connection with auto-reconnect ────────────
         function connect() {
             const host = getServerHost();
@@ -544,7 +544,7 @@
             const wsUrl = apiKey
                 ? `${protocol}//${host}${wsPath}?api_key=${encodeURIComponent(apiKey)}`
                 : `${protocol}//${host}${wsPath}`;
-            
+
             try {
                 ws = new WebSocket(wsUrl);
             } catch (e) {
@@ -553,7 +553,7 @@
                 scheduleReconnect();
                 return;
             }
-            
+
             ws.onopen = () => {
                 console.log('WebSocket connected to:', wsUrl);
                 document.getElementById('debug').textContent = 'WS: ' + host;
@@ -562,11 +562,11 @@
                 errorEl.textContent = '';
                 reconnectAttempts = 0; // Reset on successful connect
             };
-            
+
             ws.onclose = (event) => {
                 console.log('WebSocket closed:', event.code, event.reason);
                 document.getElementById('debug').textContent = 'WS closed: ' + event.code + ' ' + (event.reason || 'unknown');
-                
+
                 if (event.code === 4001) {
                     setStatus('❌ API key required', false, true);
                     errorEl.textContent = 'This server requires an API key. Add ?api_key=YOUR_KEY to the URL.';
@@ -584,25 +584,25 @@
                     scheduleReconnect();
                     return;
                 }
-                
+
                 // Normal disconnect or server restart — auto-reconnect
                 updateConnStatus('warn');
                 setStatus('Reconnecting...');
                 scheduleReconnect();
             };
-            
+
             ws.onerror = (e) => {
                 console.error('WebSocket error:', e);
                 // Don't show error message immediately — onclose will fire next
                 // and handle reconnection logic.
             };
-            
+
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
                 handleMessage(msg);
             };
         }
-        
+
         function scheduleReconnect() {
             if (reconnectAttempts >= MAX_RECONNECT) {
                 setStatus('Connection lost — click to retry', false, true);
@@ -618,10 +618,10 @@
                 };
                 return;
             }
-            
+
             const delay = Math.min(RECONNECT_BASE_DELAY * Math.pow(1.5, reconnectAttempts), 30000);
             reconnectAttempts++;
-            
+
             console.log(`Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT})`);
             setTimeout(() => {
                 // Check health first
@@ -636,7 +636,7 @@
                 });
             }, delay);
         }
-        
+
         // ── Persistent AudioContext + gapless scheduled playback ──
         let persistentCtx = null;   // Single AudioContext, never recreated
         let nextStartTime = 0;      // Scheduled end of last-queued audio
@@ -847,7 +847,7 @@
                 setStatus('Ready');
             }
         }
-        
+
         function addTranscript(speaker, text, className) {
             const p = document.createElement('p');
             p.className = className;
@@ -856,13 +856,13 @@
             transcriptEl.appendChild(p);
             transcriptEl.scrollTop = transcriptEl.scrollHeight;
         }
-        
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
-        
+
         function renderMarkdown(text) {
             // Escape HTML first to prevent XSS, then apply markdown transforms.
             // The AI response is untrusted input — prompt injection could inject HTML.
@@ -876,20 +876,20 @@
                 .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
                 .replace(/\n/g, '<br>');
         }
-        
+
         // ── Audio recording ─────────────────────────────────────
         async function startRecording() {
             if (isRecording) return;
-            
+
             // Cancel any playing audio to prevent overlap/echo
             cancelAllAudio();
             userStoppedRecording = false;  // User actively chose to speak
-            
+
             if (!ws || ws.readyState !== WebSocket.OPEN) {
                 errorEl.textContent = 'Not connected — please wait';
                 return;
             }
-            
+
             try {
                 // Always fresh stream for iOS Safari compatibility
                 if (mediaStream) {
@@ -904,22 +904,22 @@
                         noiseSuppression: true,
                     }
                 });
-                
+
                 // Recording context at 16kHz (input) — separate from playback at 24kHz
                 if (audioContext && audioContext.state !== 'closed') {
                     audioContext.close();
                 }
                 audioContext = new AudioContext({ sampleRate: 16000 });
-                
+
                 if (audioContext.state === 'suspended') {
                     await audioContext.resume();
                 }
-                
+
                 audioSource = audioContext.createMediaStreamSource(mediaStream);
                 audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-                
+
                 let lastSoundTime = Date.now();
-                
+
                 audioProcessor.onaudioprocess = (e) => {
                     if (isRecording && ws && ws.readyState === WebSocket.OPEN) {
                         const audioData = e.inputBuffer.getChannelData(0);
@@ -930,7 +930,7 @@
                         const rmsVal = Math.sqrt(audioData.reduce((s, v) => s + v * v, 0) / audioData.length);
                         micLevel = micLevel * 0.6 + rmsVal * 10 * 0.4;  // Smoothed, scaled
                         micLevel = Math.min(1, micLevel);  // Clamp
-                        
+
                         if (continuousMode) {
                             // RMS-based silence detection — less aggressive than raw energy
                             if (rmsVal > 0.015) {
@@ -941,20 +941,20 @@
                         }
                     }
                 };
-                
+
                 audioSource.connect(audioProcessor);
                 audioProcessor.connect(audioContext.destination);
-                
+
                 isRecording = true;
                 voiceBtn.classList.add('listening');
                 document.getElementById('voiceBtnIcon').textContent = '🎙️';
                 voiceBtnText.textContent = continuousMode ? 'Listening...' : 'Listening...';
                 document.getElementById('waveformContainer').classList.add('active');
-                
+
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({ type: 'start_listening', agent: agentSelect.value }));
                 }
-                
+
             } catch (err) {
                 console.error('Microphone error:', err);
                 errorEl.textContent = `Microphone error: ${err.message}`;
@@ -964,36 +964,36 @@
                 voiceBtn.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
             }
         }
-        
+
         function stopRecording() {
             if (!isRecording) return;
-            
+
             isRecording = false;
             voiceBtn.classList.remove('listening');
             document.getElementById('voiceBtnIcon').textContent = '🎤';
             voiceBtnText.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
             document.getElementById('waveformContainer').classList.remove('active');
             micLevel = 0;  // Reset waveform
-            
+
             cleanupAudioProcessor();
-            
+
             if (!continuousMode && mediaStream) {
                 mediaStream.getTracks().forEach(track => track.stop());
                 mediaStream = null;
             }
-            
+
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'stop_listening' }));
             }
         }
-        
+
         function cleanupAudio() {
             if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
             if (audioSource) { audioSource.disconnect(); audioSource = null; }
             if (audioContext) { try { audioContext.close(); } catch(e) {} audioContext = null; }
             if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }
         }
-        
+
         function cleanupAudioProcessor() {
             if (audioProcessor) { audioProcessor.disconnect(); audioProcessor = null; }
             if (audioSource) { audioSource.disconnect(); audioSource = null; }
@@ -1001,7 +1001,7 @@
             // The playback context (persistentCtx) is separate and persistent
             if (audioContext) { audioContext.close(); audioContext = null; }
         }
-        
+
         // ── Utilities ────────────────────────────────────────────
         function float32ToBase64(float32Array) {
             const bytes = new Uint8Array(float32Array.buffer);
@@ -1011,7 +1011,7 @@
             }
             return btoa(binary);
         }
-        
+
         // ── Waveform visualizer ──────────────────────────────────
         let waveformAnimId = null;
         let micLevel = 0;  // 0-1, updated during recording
@@ -1084,7 +1084,7 @@
             waveformAnimId = requestAnimationFrame(drawWaveform);
         }
         drawWaveform();  // Start animation loop
-        
+
         // ── Button event binding ─────────────────────────────────
         function bindButtonEvents() {
             // Remove old listeners by cloning
@@ -1093,7 +1093,7 @@
             // Update reference
             // (we re-assign the const via the outer scope pattern)
         }
-        
+
         // Push-to-talk (non-continuous)
         voiceBtn.addEventListener('mousedown', () => {
             if (!continuousMode) startRecording();
@@ -1111,7 +1111,7 @@
         voiceBtn.addEventListener('touchend', () => {
             if (!continuousMode) stopRecording();
         });
-        
+
         // Tap for continuous mode
         voiceBtn.addEventListener('click', () => {
             if (continuousMode) {
@@ -1124,7 +1124,7 @@
                 }
             }
         });
-        
+
         // Spacebar toggle
         document.addEventListener('keydown', (e) => {
             if (e.code === 'Space' && !e.repeat && e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT') {
@@ -1138,7 +1138,7 @@
                 }
             }
         });
-        
+
         // ── Clear history: also clear server-side conversation ──
         clearBtn.addEventListener('click', () => {
             transcriptEl.innerHTML = '';
@@ -1147,11 +1147,11 @@
                 ws.send(JSON.stringify({ type: 'clear_history' }));
             }
         });
-        
+
         continuousModeToggle.addEventListener('change', (e) => {
             continuousMode = e.target.checked;
             voiceBtnText.textContent = continuousMode ? 'Tap to Talk' : 'Hold to Talk';
-            
+
             if (continuousMode) {
                 setStatus('🎙️ Continuous mode ON — tap to start', true);
                 navigator.mediaDevices.getUserMedia({ audio: true })
@@ -1165,7 +1165,7 @@
                 }
             }
         });
-        
+
         // ── Health check & config display ─────────────────────
         async function fetchConfig() {
             try {
@@ -1179,13 +1179,13 @@
                     document.getElementById('cfgTts').textContent = cfg.backend || data.tts || '—';
                     document.getElementById('cfgVoice').textContent = cfg.voice || cfg.edge_voice || '—';
                     document.getElementById('cfgBackend').textContent = data.backend || '—';
-                    
+
                     // Show model version for Supertonic
                     if (cfg.backend === 'supertonic' && cfg.model) {
                         document.getElementById('cfgTts').textContent = `supertonic (${cfg.model})`;
                         document.getElementById('cfgVoice').textContent = `${cfg.voice} @ ${cfg.sample_rate}Hz`;
                     }
-                    
+
                     // Uptime
                     const up = data.uptime_seconds || 0;
                     const mins = Math.floor(up / 60);
@@ -1196,13 +1196,13 @@
                 // Config fetch failed — non-critical
             }
         }
-        
+
         // ── Connect on load ──────────────────────────────────────
         connect();
         fetchConfig();
         // Refresh config every 60s
         setInterval(fetchConfig, 60000);
-        
+
         // Keep connection alive with ping
         setInterval(() => {
             if (ws && ws.readyState === WebSocket.OPEN) {

@@ -13,6 +13,7 @@ WebSocket server that handles:
 import base64
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Optional
@@ -32,6 +33,8 @@ from .backend import AIBackend
 from .vad import VoiceActivityDetector
 from .auth import token_manager, load_keys_from_env, APIKey
 from .text_utils import clean_for_speech
+
+VOICES_DIR = Path(__file__).resolve().parent.parent / "voices"
 
 
 class Settings(BaseSettings):
@@ -282,6 +285,29 @@ async def get_usage(api_key: str):
     return token_manager.get_usage(key)
 
 
+@app.post("/api/voices")
+async def upload_voice(name: str, file: bytes):
+    """Upload a voice sample for TTS cloning. Returns a voice ID."""
+    VOICES_DIR.mkdir(exist_ok=True)
+    voice_id = f"{name}_{secrets.token_hex(4)}"
+    path = VOICES_DIR / f"{voice_id}.wav"
+    with open(path, "wb") as f:
+        f.write(file)
+    logger.info(f"Saved voice sample: {voice_id} ({len(file)} bytes)")
+    return {"voice_id": voice_id, "path": str(path)}
+
+
+@app.get("/api/voices")
+async def list_voices():
+    """List available voice samples."""
+    VOICES_DIR.mkdir(exist_ok=True)
+    voices = []
+    for f in sorted(VOICES_DIR.iterdir()):
+        if f.suffix in (".wav", ".mp3", ".ogg"):
+            voices.append({"voice_id": f.stem, "name": f.stem.split("_")[0], "size": f.stat().st_size})
+    return {"voices": voices}
+
+
 @app.websocket("/ws")
 @app.websocket("/voice/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -486,6 +512,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
+
+            elif msg_type == "set_voice":
+                voice_id = msg.get("voice_id", "")
+                logger.info(f"Switching voice to {voice_id} for {client_id}")
+                if voice_id and voice_id != "default":
+                    voice_path = str(VOICES_DIR / f"{voice_id}.wav")
+                    if os.path.isfile(voice_path):
+                        tts.voice_sample = voice_path
+                        await websocket.send_json({"type": "voice_set", "voice_id": voice_id})
+                    else:
+                        await websocket.send_json({"type": "error", "message": f"Voice {voice_id} not found"})
+                else:
+                    tts.voice_sample = None
+                    await websocket.send_json({"type": "voice_set", "voice_id": "default"})
 
             elif msg_type == "clear_history":
                 # Clear server-side conversation history

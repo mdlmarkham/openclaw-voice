@@ -439,6 +439,17 @@
             <div class="config-item"><span class="config-label">Uptime:</span> <span class="config-value" id="cfgUptime">—</span></div>
         </div>
 
+        <div class="voice-clone-section" style="margin-bottom:16px;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;border:1px solid rgba(255,255,255,0.08);font-size:0.85rem;">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <span style="color:#888;text-transform:uppercase;letter-spacing:0.05em;font-size:0.7rem;">Voice</span>
+                <select id="voiceSelect" style="background:rgba(255,255,255,0.08);color:#fff;border:1px solid #444;border-radius:6px;padding:4px 10px;font-size:0.85rem;cursor:pointer;outline:none;flex:1;min-width:120px;">
+                    <option value="default">Default</option>
+                </select>
+                <button id="cloneVoiceBtn" style="padding:5px 12px;border:1px solid #c9a227;background:transparent;color:#c9a227;border-radius:6px;cursor:pointer;font-size:0.8rem;white-space:nowrap;">+ Clone</button>
+                <span id="cloneStatus" style="color:#888;font-size:0.75rem;"></span>
+            </div>
+        </div>
+
         <div class="transcript-box">
             <h3>Conversation</h3>
             <div id="transcript"></div>
@@ -711,6 +722,10 @@
                     break;
                 case 'vad_status':
                     // Could use for visual feedback
+                    break;
+                case 'voice_set':
+                    cloneStatus.textContent = voiceSelect.value === 'default' ? 'Default voice' : 'Voice set';
+                    setTimeout(() => { cloneStatus.textContent = ''; }, 2000);
                     break;
             }
         }
@@ -1203,6 +1218,72 @@
                 // Config fetch failed — non-critical
             }
         }
+
+        // ── Voice cloning ─────────────────────────────────────────
+        const voiceSelect = document.getElementById('voiceSelect');
+        const cloneBtn = document.getElementById('cloneVoiceBtn');
+        const cloneStatus = document.getElementById('cloneStatus');
+
+        async function loadVoices() {
+            try {
+                const resp = await fetch(`/api/voices`);
+                const data = await resp.json();
+                const current = voiceSelect.value;
+                voiceSelect.innerHTML = '<option value="default">Default</option>';
+                for (const v of data.voices) {
+                    const opt = document.createElement('option');
+                    opt.value = v.voice_id;
+                    opt.textContent = v.name;
+                    voiceSelect.appendChild(opt);
+                }
+                if (current !== 'default') voiceSelect.value = current;
+            } catch {}
+        }
+
+        cloneBtn.addEventListener('click', async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const ctx = new AudioContext({ sampleRate: 16000 });
+                const src = ctx.createMediaStreamSource(stream);
+                const dest = ctx.createMediaStreamDestination();
+                src.connect(dest);
+
+                const rec = new MediaRecorder(dest.stream, { mimeType: 'audio/webm' });
+                const chunks = [];
+                rec.ondataavailable = (e) => chunks.push(e.data);
+                cloneStatus.textContent = 'Recording 3s...';
+                rec.start();
+                await new Promise(r => setTimeout(r, 3000));
+                rec.stop();
+                await new Promise(r => { rec.onstop = r; });
+                stream.getTracks().forEach(t => t.stop());
+                ctx.close();
+
+                const blob = new Blob(chunks, { type: 'audio/webm' });
+                const name = prompt('Name this voice:', 'My Voice') || 'My Voice';
+                const form = new FormData();
+                form.append('name', name);
+                form.append('file', blob, 'sample.webm');
+
+                const resp = await fetch('/api/voices', { method: 'POST', body: form });
+                const result = await resp.json();
+                cloneStatus.textContent = '✅ Cloned!';
+                await loadVoices();
+                voiceSelect.value = result.voice_id;
+                setTimeout(() => { cloneStatus.textContent = ''; }, 3000);
+            } catch (e) {
+                cloneStatus.textContent = '❌ Mic access denied';
+                setTimeout(() => { cloneStatus.textContent = ''; }, 3000);
+            }
+        });
+
+        voiceSelect.addEventListener('change', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'set_voice', voice_id: voiceSelect.value }));
+            }
+        });
+
+        loadVoices();
 
         // ── Connect on load ──────────────────────────────────────
         connect();

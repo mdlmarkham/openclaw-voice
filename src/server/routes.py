@@ -24,6 +24,7 @@ from .session import SessionContext
 from . import state as app_state
 from .transport import WebSocketTransport
 from .tts import ChatterboxTTS
+from .vad import VADEndpoint
 
 _tts_lock = asyncio.Lock()
 
@@ -183,6 +184,7 @@ async def websocket_endpoint(websocket: WebSocket):
     MAX_AUDIO_BUFFER_SAMPLES = settings.sample_rate * MAX_AUDIO_BUFFER_SECONDS
     is_listening = False
     session_agent: Optional[str] = None
+    vad_endpoint: Optional[VADEndpoint] = None
 
     try:
         while True:
@@ -195,6 +197,16 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "start_listening":
                 is_listening = True
                 audio_buffer = []
+                if settings.vad_enabled and app_state.vad is not None:
+                    vad_endpoint = VADEndpoint(
+                        app_state.vad,
+                        threshold=settings.vad_threshold,
+                        min_silence_frames=max(1, settings.vad_silence_duration_ms * settings.sample_rate // settings.vad_frame_size // 1000),
+                        min_speech_frames=max(1, settings.vad_min_speech_duration_ms * settings.sample_rate // settings.vad_frame_size // 1000),
+                        sample_rate=settings.sample_rate,
+                    )
+                else:
+                    vad_endpoint = None
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"Agent selected: {session_agent}")
@@ -220,6 +232,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "stop_listening":
                 is_listening = False
+                vad_endpoint = None
                 session = SessionContext(agent_id=session_agent)
                 if app_state.pipeline is not None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
@@ -240,6 +253,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                         audio_buffer.append(audio_np)
                         is_listening = False
+                        vad_endpoint = None
                         session = SessionContext(agent_id=session_agent)
                         if app_state.pipeline is not None:
                             async for event in app_state.pipeline.process_audio(audio_buffer, session):
@@ -249,6 +263,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         audio_buffer.append(audio_np)
 
+                    # VAD endpointing: detect speech start/end
+                    if vad_endpoint is not None and len(audio_np) > 0:
+                        event = vad_endpoint.process(audio_np)
+                        if event == "speech_end":
+                            logger.debug("VAD endpoint: speech ended, processing buffer")
+                            is_listening = False
+                            session = SessionContext(agent_id=session_agent)
+                            if app_state.pipeline is not None:
+                                async for e in app_state.pipeline.process_audio(audio_buffer, session):
+                                    await transport.send_event(e)
+                            audio_buffer = []
+                            buffer_samples = 0
+                            vad_endpoint = None
+
+                    # VAD status for client visual feedback
                     if app_state.vad is not None and len(audio_np) > 0:
                         has_speech = app_state.vad.is_speech(audio_np)
                         await transport.send_json(

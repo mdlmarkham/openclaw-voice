@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     higgs_api_url: str = "https://api.boson.ai/v1/audio/speech"
     higgs_timeout_seconds: int = 3
 
+    # VAD endpointing: auto-stop recording when user stops talking
+    vad_enabled: bool = True
+    vad_silence_duration_ms: int = 600
+    vad_threshold: float = 0.5
+    vad_min_speech_duration_ms: int = 100
+    vad_frame_size: int = 512  # samples per VAD frame
+
     sample_rate: int = 16000
     cors_origins: str = "*"
     system_prompt: str = "unused_in_openclaw_mode"

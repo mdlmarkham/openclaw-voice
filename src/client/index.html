@@ -479,6 +479,7 @@
         let mediaStream = null;
         let isRecording = false;
         let continuousMode = false;
+        let userStoppedRecording = false;  // True when user manually taps to stop in continuous mode
         let reconnectAttempts = 0;
         const MAX_RECONNECT = 10;
         const RECONNECT_BASE_DELAY = 1000; // ms
@@ -660,6 +661,8 @@
                     cancelAllAudio();
                     nextStartTime = 0;
                     isPlaying = true;
+                    // Don't auto-listen after this response if user manually stopped
+                    // (userStoppedRecording persists through the response)
                     break;
                 case 'response_chunk':
                     streamingText += msg.text;
@@ -810,11 +813,11 @@
             if (completionTimer) clearTimeout(completionTimer);
             completionTimer = setTimeout(() => {
                 isPlaying = false;
-                if (continuousMode) {
-                    setStatus('🎙️ Ready to listen...', true);
-                    setTimeout(() => {
-                        if (continuousMode && !isPlaying) startRecording();
-                    }, 500);  // 500ms pause to ensure playback is truly done
+                if (continuousMode && !userStoppedRecording) {
+                    setStatus('🎙️ Auto-listening...');
+                    startRecording();
+                } else if (continuousMode) {
+                    setStatus('🎙️ Tap to respond', true);
                 } else {
                     setStatus('Ready');
                 }
@@ -823,11 +826,11 @@
 
         function onAudioComplete() {
             isPlaying = false;
-            if (continuousMode) {
-                setStatus('🎙️ Ready to listen...', true);
-                setTimeout(() => {
-                    if (continuousMode && !isPlaying) startRecording();
-                }, 500);
+            if (continuousMode && !userStoppedRecording) {
+                setStatus('🎙️ Auto-listening...');
+                startRecording();
+            } else if (continuousMode) {
+                setStatus('🎙️ Tap to respond', true);
             } else {
                 setStatus('Ready');
             }
@@ -865,6 +868,7 @@
             
             // Cancel any playing audio to prevent overlap/echo
             cancelAllAudio();
+            userStoppedRecording = false;  // User actively chose to speak
             
             if (!ws || ws.readyState !== WebSocket.OPEN) {
                 errorEl.textContent = 'Not connected — please wait';
@@ -1097,8 +1101,10 @@
         voiceBtn.addEventListener('click', () => {
             if (continuousMode) {
                 if (isRecording) {
+                    userStoppedRecording = true;  // User manually stopped
                     stopRecording();
                 } else {
+                    userStoppedRecording = false;
                     startRecording();
                 }
             }
@@ -1109,8 +1115,10 @@
             if (e.code === 'Space' && !e.repeat && e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT') {
                 e.preventDefault();
                 if (isRecording) {
+                    userStoppedRecording = true;
                     stopRecording();
                 } else {
+                    userStoppedRecording = false;
                     startRecording();
                 }
             }

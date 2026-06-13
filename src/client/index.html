@@ -651,18 +651,28 @@
         
         // ── Persistent AudioContext + gapless scheduled playback ──
         let persistentCtx = null;   // Single AudioContext, never recreated
+        let persistentCtxSampleRate = null;  // Sample rate from server
         let nextStartTime = 0;      // Scheduled end of last-queued audio
         let audioQueuing = false;   // True while we're queuing chunks for a response
         let currentResponseElement = null;
         let streamingText = '';
         let responseSeq = 0;       // Tracks sentence sequence for ordering
 
-        function getAudioCtx() {
+        function getAudioCtx(serverSampleRate) {
+            // Use server's sample rate (44100 for Supertonic, 24000 for Edge/ElevenLabs)
+            const targetRate = serverSampleRate || 44100;
+            
             // Create or resume the persistent AudioContext
-            if (!persistentCtx || persistentCtx.state === 'closed') {
-                persistentCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            if (!persistentCtx || persistentCtx.state === 'closed' || persistentCtxSampleRate !== targetRate) {
+                // Close old context if sample rate changed
+                if (persistentCtx && persistentCtx.state !== 'closed') {
+                    try { persistentCtx.close(); } catch(e) {}
+                }
+                persistentCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: targetRate });
+                persistentCtxSampleRate = targetRate;
             }
             if (persistentCtx.state === 'suspended') {
+                // Mobile Safari requires resume from user gesture
                 persistentCtx.resume();
             }
             return persistentCtx;
@@ -762,10 +772,10 @@
 
         function scheduleAudioChunk(base64Data, sampleRate, seq) {
             try {
-                const ctx = getAudioCtx();
+                const ctx = getAudioCtx(sampleRate);
                 const float32 = decodePCM(base64Data);
 
-                // Resample if needed (server should send 24000Hz, but handle mismatch)
+                // Resample if needed (handles server/client sample rate mismatch)
                 let audioData = float32;
                 let rate = sampleRate;
                 if (sampleRate !== ctx.sampleRate) {
@@ -837,7 +847,7 @@
         function scheduleAudioCompletion(responseText) {
             // Calculate when the last chunk will finish playing
             // and set a timer to trigger continuous mode or ready state
-            const ctx = getAudioCtx();
+            const ctx = getAudioCtx(persistentCtxSampleRate || 44100);
             const timeUntilDone = Math.max(0, (nextStartTime - ctx.currentTime) * 1000);
 
             isPlaying = true;
@@ -1129,6 +1139,10 @@
         
         // Push-to-talk (non-continuous)
         voiceBtn.addEventListener('mousedown', () => {
+            // Unlock AudioContext on first user gesture (required for mobile Safari/Chrome)
+            if (persistentCtx && persistentCtx.state === 'suspended') {
+                persistentCtx.resume();
+            }
             if (!continuousMode) startRecording();
         });
         voiceBtn.addEventListener('mouseup', () => {
@@ -1139,6 +1153,10 @@
         });
         voiceBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
+            // Unlock AudioContext on first touch (required for mobile)
+            if (persistentCtx && persistentCtx.state === 'suspended') {
+                persistentCtx.resume();
+            }
             if (!continuousMode) startRecording();
         });
         voiceBtn.addEventListener('touchend', () => {

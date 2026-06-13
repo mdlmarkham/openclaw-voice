@@ -13,7 +13,7 @@ import time
 import io
 import wave
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 
 import numpy as np
 from fastapi import APIRouter, Body, WebSocket
@@ -27,6 +27,60 @@ from . import state as app_state
 from .transport import WebSocketTransport
 from .tts import ChatterboxTTS
 from .vad import VADEndpoint
+
+# ── REST API session store ──────────────────────────────────────────
+# Persists conversation history between /api/chat calls for iOS Shortcuts
+_chat_sessions: Dict[str, dict] = {}  # session_id → {backend, last_used}
+_SESSION_TTL = 3600  # Sessions expire after 1 hour of inactivity
+
+
+def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
+    """Get or create a backend session for the REST API."""
+    import asyncio
+    from .backend import AIBackend
+    
+    # Clean expired sessions
+    now = time.time()
+    expired = [sid for sid, s in _chat_sessions.items() if now - s["last_used"] > _SESSION_TTL]
+    for sid in expired:
+        del _chat_sessions[sid]
+    
+    if session_id and session_id in _chat_sessions:
+        session = _chat_sessions[session_id]
+        session["last_used"] = now
+        return session["backend"], session_id
+    
+    # Create new session
+    new_id = session_id or f"rest_{secrets.token_hex(8)}"
+    # Use the same gateway config as the main backend
+    gateway_url = settings.openclaw_gateway_url or os.getenv("OPENCLAW_GATEWAY_URL")
+    gateway_token = settings.openclaw_gateway_token or os.getenv("OPENCLAW_GATEWAY_TOKEN")
+    openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+    
+    if gateway_url and gateway_token:
+        # OpenClaw gateway mode
+        voice_model = settings.voice_model or app_state.backend.model if app_state.backend else None
+        model_id = voice_model
+        if model_id and not model_id.startswith(("openclaw/", "ollama/", "nvidia/", "synthetic/")):
+            model_id = f"openclaw/metis/{model_id}"
+        backend = AIBackend(
+            backend_type="openclaw",
+            url=f"{gateway_url}/v1",
+            model=model_id or "openclaw/metis/glm-5.1:cloud",
+            api_key=gateway_token,
+            system_prompt="",
+        )
+    else:
+        # Direct OpenAI mode
+        backend = AIBackend(
+            backend_type="openai",
+            url="https://api.openai.com/v1",
+            model="gpt-4o-mini",
+            api_key=openai_key,
+            system_prompt="",
+        )
+    _chat_sessions[new_id] = {"backend": backend, "last_used": now}
+    return backend, new_id
 
 _tts_lock = asyncio.Lock()
 
@@ -255,6 +309,7 @@ async def speak(
 async def chat(
     text: str = Body(..., embed=True),
     agent: str = Body(default="metis"),
+    session_id: str = Body(default=None),
     format: str = Body(default="wav"),
 ):
     """Full voice chat endpoint — text in, spoken response out.
@@ -262,25 +317,27 @@ async def chat(
     1. Sends text to OpenClaw gateway (LLM)
     2. Gets response text
     3. Synthesizes to speech
-    4. Returns audio
+    4. Returns audio + session_id for continuity
     
     For iOS Shortcuts: send a question, get a spoken answer.
+    Include session_id from previous response to continue the conversation.
     
     Request body:
         text: User message
         agent: Agent name
+        session_id: (optional) Session ID from previous call for continuity
         format: "wav" or "pcm"
     """
     if not text or not text.strip():
         return JSONResponse(status_code=400, content={"error": "text is required"})
     
-    backend = app_state.backend
+    backend, sid = _get_or_create_session(session_id, agent)
     tts = app_state.tts
-    if backend is None or tts is None:
+    if tts is None:
         return JSONResponse(status_code=503, content={"error": "Voice pipeline not available"})
     
     try:
-        # Get LLM response
+        # Get LLM response (using session backend for continuity)
         response_text = ""
         async for chunk in backend.chat_stream(text, agent_hint=agent):
             response_text += chunk
@@ -313,6 +370,7 @@ async def chat(
                 media_type="audio/pcm",
                 headers={
                     "X-Sample-Rate": "24000",
+                    "X-Session-Id": sid,
                 },
             )
         else:
@@ -327,10 +385,86 @@ async def chat(
             return Response(
                 content=wav_bytes,
                 media_type="audio/wav",
+                headers={
+                    "X-Session-Id": sid,
+                },
             )
     
     except Exception as e:
         logger.error(f"Chat API error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.post("/api/chat/json")
+async def chat_json(
+    text: str = Body(..., embed=True),
+    agent: str = Body(default="metis"),
+    session_id: str = Body(default=None),
+):
+    """Chat endpoint returning JSON with both audio (base64 WAV) and session_id.
+    
+    For iOS Shortcuts that need to extract the session_id for continuity.
+    
+    Request body:
+        text: User message
+        agent: Agent name
+        session_id: (optional) Session ID from previous call
+    
+    Returns JSON: {session_id: str, audio_base64: str, response_text: str}
+    """
+    if not text or not text.strip():
+        return JSONResponse(status_code=400, content={"error": "text is required"})
+    
+    backend, sid = _get_or_create_session(session_id, agent)
+    tts = app_state.tts
+    if tts is None:
+        return JSONResponse(status_code=503, content={"error": "Voice pipeline not available"})
+    
+    try:
+        # Get LLM response
+        response_text = ""
+        async for chunk in backend.chat_stream(text, agent_hint=agent):
+            response_text += chunk
+        
+        if not response_text.strip():
+            return JSONResponse(status_code=500, content={"error": "LLM returned empty response"})
+        
+        # Sanitize for TTS
+        import re
+        tts_text = response_text.strip()
+        tts_text = re.sub(r'[*_#`~=]', '', tts_text)
+        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)
+        tts_text = tts_text.replace('=', ' equals ')
+        tts_text = re.sub(r'\s+', ' ', tts_text).strip()
+        
+        # Synthesize
+        audio_chunks = []
+        async for chunk in tts.synthesize_stream(response_text.strip()):
+            audio_chunks.append(chunk)
+        
+        if not audio_chunks:
+            return JSONResponse(status_code=500, content={"error": "TTS produced no audio"})
+        
+        pcm_bytes = b''.join(audio_chunks)
+        
+        # Encode as WAV
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(pcm_bytes)
+        wav_bytes = buf.getvalue()
+        
+        import base64
+        return JSONResponse(content={
+            "session_id": sid,
+            "audio_base64": base64.b64encode(wav_bytes).decode('ascii'),
+            "response_text": response_text,
+        })
+    
+    except Exception as e:
+        logger.error(f"Chat JSON API error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 

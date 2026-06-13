@@ -73,14 +73,25 @@
 
 <div class="step">
   <strong>POST /api/chat</strong> — Full pipeline (LLM + TTS)<br>
-  <small>Returns: WAV audio</small><br>
-  <code>{"text": "your question", "agent": "metis"}</code>
+  <small>Returns: WAV audio + session_id in X-Session-Id header</small><br>
+  <code>{"text": "your question", "agent": "metis", "session_id": "optional"}</code>
+</div>
+
+<div class="step">
+  <strong>POST /api/chat/json</strong> — Full pipeline, JSON response<br>
+  <small>Returns: JSON with session_id + base64 audio + text</small><br>
+  <code>{"text": "your question", "agent": "metis", "session_id": "optional"}</code><br>
+  <small>Response: {"session_id": "...", "audio_base64": "...", "response_text": "..."}</small>
 </div>
 
 <div class="step">
   <strong>POST /api/speak</strong> — TTS only<br>
   <small>Returns: WAV audio</small><br>
   <code>{"text": "text to speak", "agent": "metis"}</code>
+</div>
+
+<div class="tip">
+  <strong>CONVERSATION CONTINUITY:</strong> Include <code>session_id</code> from the previous response to continue the conversation. The server remembers context within a session. Sessions expire after 1 hour of inactivity.
 </div>
 
 </body>

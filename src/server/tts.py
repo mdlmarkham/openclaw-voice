@@ -247,11 +247,33 @@ class ChatterboxTTS:
         if self._backend == "elevenlabs":
             try:
                 loop = asyncio.get_event_loop()
-                chunks = await loop.run_in_executor(self._executor, self._drain_elevenlabs_sync, text)
-                # Yield in small pieces to avoid huge single chunk
-                # For now, yield whole result as one chunk (trading true streaming for non-blocking)
-                if chunks:
-                    yield chunks
+                queue: asyncio.Queue = asyncio.Queue()
+                SENTINEL = object()
+
+                def _produce():
+                    try:
+                        audio_generator = self._elevenlabs_client.text_to_speech.convert(
+                            voice_id=self.voice_id,
+                            text=text,
+                            model_id="eleven_turbo_v2_5",
+                            output_format="pcm_24000",
+                        )
+                        for chunk in audio_generator:
+                            loop.call_soon_threadsafe(queue.put_nowait, chunk)
+                    except Exception as e:
+                        loop.call_soon_threadsafe(queue.put_nowait, e)
+                    finally:
+                        loop.call_soon_threadsafe(queue.put_nowait, SENTINEL)
+
+                loop.run_in_executor(self._executor, _produce)
+                while True:
+                    item = await queue.get()
+                    if item is SENTINEL:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+                    if item:
+                        yield item
             except Exception as e:
                 logger.error(f"ElevenLabs streaming error: {e}")
 

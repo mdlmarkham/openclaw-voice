@@ -44,6 +44,53 @@ class TestWhisperSTT:
         assert isinstance(result, str)
 
 
+class TestWhisperSTTRemote:
+    """Tests for WhisperSTT remote-offload + fallback (#4)."""
+
+    @pytest.mark.asyncio
+    async def test_no_remote_loads_local_eagerly(self):
+        stt = WhisperSTT()
+        assert stt._remote_url is None
+        assert stt._backend in ("mock", "faster-whisper", "openai-whisper")
+
+    @pytest.mark.asyncio
+    async def test_remote_configured_skips_eager_local_load(self):
+        stt = WhisperSTT(remote_url="http://127.0.0.1:1")
+        assert stt._backend == "remote"
+        assert stt.model is None
+
+    @pytest.mark.asyncio
+    async def test_remote_success_does_not_load_local(self, monkeypatch):
+        stt = WhisperSTT(remote_url="http://127.0.0.1:1")
+
+        async def fake_remote(audio):
+            return "hello from remote"
+
+        monkeypatch.setattr(stt, "_transcribe_remote", fake_remote)
+        text = await stt.transcribe(np.zeros(16000, dtype=np.float32))
+        assert text == "hello from remote"
+        assert stt.model is None
+        assert stt.status()["last_source"] == "remote"
+
+    @pytest.mark.asyncio
+    async def test_remote_failure_falls_back_to_local(self, monkeypatch):
+        stt = WhisperSTT(remote_url="http://127.0.0.1:1")
+
+        async def failing_remote(audio):
+            raise ConnectionError("unreachable")
+
+        monkeypatch.setattr(stt, "_transcribe_remote", failing_remote)
+        text = await stt.transcribe(np.zeros(16000, dtype=np.float32))
+        assert isinstance(text, str)
+        assert stt.status()["last_source"] == "local"
+
+    def test_load_model_is_idempotent(self):
+        stt = WhisperSTT()
+        model_ref = stt.model
+        stt._load_model()
+        assert stt.model is model_ref
+
+
 class TestChatterboxTTS:
     """Tests for Text-to-Speech module."""
 

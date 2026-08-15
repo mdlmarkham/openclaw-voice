@@ -5,6 +5,7 @@ Silero VAD integration + state-machine endpointing for automatic
 end-of-utterance detection.
 """
 
+import asyncio
 from enum import Enum, auto
 from typing import Optional
 import numpy as np
@@ -27,9 +28,10 @@ class VADEvent:
 class VoiceActivityDetector:
     """Voice Activity Detection using Silero VAD."""
 
-    def __init__(self, threshold: float = 0.5):
+    def __init__(self, threshold: float = 0.5, executor: Optional[object] = None):
         self.threshold = threshold
         self.model = None
+        self._executor = executor
         self._load_model()
 
     def _load_model(self):
@@ -62,6 +64,13 @@ class VoiceActivityDetector:
         except Exception as e:
             logger.error(f"VAD error: {e}")
             return True
+
+    async def is_speech_async(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
+        """Async wrapper running is_speech in executor."""
+        if self._executor is not None:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(self._executor, self.is_speech, audio, sample_rate)
+        return self.is_speech(audio, sample_rate)
 
 
 class VADEndpoint:
@@ -105,6 +114,11 @@ class VADEndpoint:
     def is_speaking(self) -> bool:
         return self._state in (VADState.SPEAKING, VADState.STOPPING)
 
+    async def process_async(self, audio: np.ndarray) -> Optional[str]:
+        """Async version of process using async VAD."""
+        has_speech = await self._vad.is_speech_async(audio, self._sample_rate)
+        return self._advance_state(has_speech)
+
     def process(self, audio: np.ndarray) -> Optional[str]:
         """
         Process one audio frame. Returns VADEvent or None.
@@ -118,7 +132,9 @@ class VADEndpoint:
             None if no state transition
         """
         has_speech = self._vad.is_speech(audio, self._sample_rate)
+        return self._advance_state(has_speech)
 
+    def _advance_state(self, has_speech: bool) -> Optional[str]:
         if self._state == VADState.SILENT:
             if has_speech:
                 self._speech_frames += 1
@@ -128,7 +144,6 @@ class VADEndpoint:
                     return VADEvent.SPEECH_START
             else:
                 self._speech_frames = 0
-
         elif self._state == VADState.SPEAKING:
             if has_speech:
                 self._silence_frames = 0
@@ -138,5 +153,4 @@ class VADEndpoint:
                     self._state = VADState.SILENT
                     self._silence_frames = 0
                     return VADEvent.SPEECH_END
-
         return None

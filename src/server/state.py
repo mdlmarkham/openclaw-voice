@@ -23,3 +23,4 @@ _startup_time: float = 0.0
 
 stt_executor: Optional[ThreadPoolExecutor] = None
 tts_executor: Optional[ThreadPoolExecutor] = None
+vad_executor: Optional[ThreadPoolExecutor] = None

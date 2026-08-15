@@ -246,14 +246,12 @@ class ChatterboxTTS:
         """Primary TTS streaming (before fallback)."""
         if self._backend == "elevenlabs":
             try:
-                audio_generator = self._elevenlabs_client.text_to_speech.convert(
-                    voice_id=self.voice_id,
-                    text=text,
-                    model_id="eleven_turbo_v2_5",
-                    output_format="pcm_24000",
-                )
-                for chunk in audio_generator:
-                    yield chunk
+                loop = asyncio.get_event_loop()
+                chunks = await loop.run_in_executor(self._executor, self._drain_elevenlabs_sync, text)
+                # Yield in small pieces to avoid huge single chunk
+                # For now, yield whole result as one chunk (trading true streaming for non-blocking)
+                if chunks:
+                    yield chunks
             except Exception as e:
                 logger.error(f"ElevenLabs streaming error: {e}")
 
@@ -306,6 +304,18 @@ class ChatterboxTTS:
             logger.error(f"Supertonic synthesis error: {e}")
             raise
 
+    @staticmethod
+    def _decode_and_resample(raw_bytes: bytes, target_sr: int = 24000) -> np.ndarray:
+        """Decode MP3/WAV bytes and resample to target_sr. Runs in executor."""
+        import io
+        import soundfile as sf
+        buf = io.BytesIO(raw_bytes)
+        data, sr = sf.read(buf)
+        if sr != target_sr:
+            import soxr
+            data = soxr.resample(data, sr, target_sr)
+        return data.astype(np.float32)
+
     async def _synthesize_supertonic(self, text: str) -> np.ndarray:
         """Supertonic synthesis via executor."""
         loop = asyncio.get_event_loop()
@@ -323,30 +333,29 @@ class ChatterboxTTS:
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     audio_buffer.write(chunk["data"])
-            audio_buffer.seek(0)
-
-            import soundfile as sf
-
-            data, sr = sf.read(audio_buffer)
-            if sr != 24000:
-                import soxr
-
-                data = soxr.resample(data, sr, 24000)
-            return data.astype(np.float32)
+            raw_bytes = audio_buffer.getvalue()
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(self._executor, self._decode_and_resample, raw_bytes, 24000)
+            return data
         except Exception as e:
             logger.error(f"Edge TTS error: {e}")
             raise
 
+    def _drain_elevenlabs_sync(self, text: str) -> bytes:
+        """Synchronous drain of ElevenLabs generator; runs in executor."""
+        audio_generator = self._elevenlabs_client.text_to_speech.convert(
+            voice_id=self.voice_id,
+            text=text,
+            model_id="eleven_turbo_v2_5",
+            output_format="pcm_24000",
+        )
+        return b"".join(audio_generator)
+
     async def _synthesize_elevenlabs(self, text: str) -> np.ndarray:
         """ElevenLabs synthesis."""
         try:
-            audio_generator = self._elevenlabs_client.text_to_speech.convert(
-                voice_id=self.voice_id,
-                text=text,
-                model_id="eleven_turbo_v2_5",
-                output_format="pcm_24000",
-            )
-            audio_bytes = b"".join(audio_generator)
+            loop = asyncio.get_event_loop()
+            audio_bytes = await loop.run_in_executor(self._executor, self._drain_elevenlabs_sync, text)
             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
             return audio_array.astype(np.float32) / 32768.0
         except Exception as e:
@@ -392,15 +401,12 @@ class _EdgeFallback:
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     audio_buffer.write(chunk["data"])
-            audio_buffer.seek(0)
-
-            import soundfile as sf
-
-            data, sr = sf.read(audio_buffer)
-            if sr != 24000:
-                import soxr
-
-                data = soxr.resample(data, sr, 24000)
+            raw_bytes = audio_buffer.getvalue()
+            # Decode/resample off the event loop
+            import asyncio
+            loop = asyncio.get_event_loop()
+            # Use default executor
+            data = await loop.run_in_executor(None, ChatterboxTTS._decode_and_resample, raw_bytes, 24000)
             audio_int16 = float32_to_int16(data)
             yield audio_int16.tobytes()
         except Exception as e:

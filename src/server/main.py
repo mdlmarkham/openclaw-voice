@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI):
 
     state.stt_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
     state.tts_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts")
+    state.vad_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vad")
 
     logger.info("Loading STT, TTS models (parallel)...")
     tasks = [
@@ -75,7 +76,7 @@ async def lifespan(app: FastAPI):
         ),
     ]
     if settings.vad_enabled:
-        tasks.append(asyncio.to_thread(VoiceActivityDetector))
+        tasks.append(asyncio.to_thread(VoiceActivityDetector, executor=state.vad_executor))
         logger.info("Loading VAD model as well...")
     else:
         logger.info("VAD disabled, skipping load")
@@ -190,7 +191,9 @@ async def lifespan(app: FastAPI):
         state.stt_executor.shutdown(wait=False)
     if state.tts_executor:
         state.tts_executor.shutdown(wait=False)
-    state.stt_executor = state.tts_executor = None
+    if state.vad_executor:
+        state.vad_executor.shutdown(wait=False)
+    state.stt_executor = state.tts_executor = state.vad_executor = None
 
 
 app = FastAPI(title="OpenClaw Voice", version="0.3.0", lifespan=lifespan)

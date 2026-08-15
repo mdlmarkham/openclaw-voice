@@ -732,7 +732,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     # VAD endpointing: detect speech start/end
                     if vad_endpoint is not None and len(audio_np) > 0:
-                        event = vad_endpoint.process(audio_np)
+                        event = await vad_endpoint.process_async(audio_np)
                         if event == "speech_end":
                             logger.debug("VAD endpoint: speech ended, processing buffer")
                             is_listening = False
@@ -749,7 +749,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     # VAD status for client visual feedback
                     if app_state.vad is not None and len(audio_np) > 0:
-                        has_speech = app_state.vad.is_speech(audio_np)
+                        has_speech = await app_state.vad.is_speech_async(audio_np)
                         await transport.send_json(
                             {
                                 "type": "vad_status",
@@ -773,7 +773,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             sample_rate=settings.sample_rate,
                         )
                     if barge_in_vad is not None:
-                        event = barge_in_vad.process(audio_np)
+                        event = await barge_in_vad.process_async(audio_np)
                         if event == "speech_start":
                             logger.info("Barge-in: user started speaking during playback")
                             if pipeline_task is not None and not pipeline_task.done():

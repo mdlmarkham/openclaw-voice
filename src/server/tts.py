@@ -257,6 +257,7 @@ class ChatterboxTTS:
                 loop = asyncio.get_event_loop()
                 queue: asyncio.Queue = asyncio.Queue()
                 SENTINEL = object()
+                stop_flag = threading.Event()
 
                 def _produce():
                     try:
@@ -267,6 +268,8 @@ class ChatterboxTTS:
                             output_format="pcm_24000",
                         )
                         for chunk in audio_generator:
+                            if stop_flag.is_set():
+                                break
                             loop.call_soon_threadsafe(queue.put_nowait, chunk)
                     except Exception as e:
                         loop.call_soon_threadsafe(queue.put_nowait, e)
@@ -274,14 +277,23 @@ class ChatterboxTTS:
                         loop.call_soon_threadsafe(queue.put_nowait, SENTINEL)
 
                 loop.run_in_executor(self._executor, _produce)
-                while True:
-                    item = await queue.get()
-                    if item is SENTINEL:
-                        break
-                    if isinstance(item, Exception):
-                        raise item
-                    if item:
-                        yield item
+                try:
+                    while True:
+                        item = await queue.get()
+                        if item is SENTINEL:
+                            break
+                        if isinstance(item, Exception):
+                            raise item
+                        if item:
+                            yield item
+                finally:
+                    # Signal _produce to stop on early consumer exit (barge-in,
+                    # cancellation, GeneratorExit). Without this the background
+                    # thread keeps draining the full ElevenLabs SDK generator —
+                    # wasting API cost/duration when nobody is listening (#23).
+                    # Note: stop_flag is only checked between SDK chunks; a
+                    # single long-blocking convert() call can't be interrupted.
+                    stop_flag.set()
             except Exception as e:
                 logger.error(f"ElevenLabs streaming error: {e}")
 

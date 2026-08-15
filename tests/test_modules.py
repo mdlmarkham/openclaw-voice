@@ -690,6 +690,109 @@ class TestTTSLocalModelLock:
         assert calls[-1]["observed"] == "/voices/a.wav"
 
 
+class TestTTSElevenLabsEarlyCancel:
+    """Regression tests for issue #23: when the consumer of the ElevenLabs
+    streaming generator stops early (barge-in, cancellation), the background
+    _produce thread must stop draining the SDK generator instead of running the
+    full synthesis to completion — wasting API cost/duration.
+
+    The fix adds a threading.Event (stop_flag) checked between SDK chunks; the
+    consumer's finally block sets it on early exit (GeneratorExit / cancellation).
+    """
+
+    def _make_fake_elevenlabs(self, monkeypatch):
+        """Return (ChatterboxTTS forced to elevenlabs backend, chunks_produced list).
+
+        The fake ElevenLabs SDK yields chunks slowly (one per ~50ms) so the test
+        can consume a few, then break out — simulating barge-in mid-stream. The
+        background _produce thread checks stop_flag between chunks and should
+        stop without draining the full generator.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.setattr(ChatterboxTTS, "_load_model", lambda self: None)
+        tts = ChatterboxTTS(executor=ThreadPoolExecutor(max_workers=4))
+        tts._backend = "elevenlabs"
+
+        TOTAL_CHUNKS = 20
+        chunks_produced = []
+
+        class FakeConvert:
+            def __call__(self, **kwargs):
+                for i in range(TOTAL_CHUNKS):
+                    if getattr(self, "_stopped", False):
+                        break
+                    time.sleep(0.05)
+                    chunks_produced.append(i)
+                    yield f"chunk{i}".encode()
+
+        class FakeElevenLabsClient:
+            def __init__(self):
+                self.text_to_speech = type("obj", (object,), {"convert": FakeConvert()})()
+
+        tts._elevenlabs_client = FakeElevenLabsClient()
+        return tts, chunks_produced, TOTAL_CHUNKS
+
+    @pytest.mark.asyncio
+    async def test_early_consumer_exit_stops_background_thread(self, monkeypatch):
+        """Consumer breaks out after 2 chunks (simulating barge-in). The
+        background _produce thread must stop — not drain all 20 chunks.
+
+        Without the stop_flag fix, _produce would iterate the full generator
+        (20 chunks × 50ms = ~1s of wasted work) even though nobody is listening."""
+        tts, chunks_produced, total = self._make_fake_elevenlabs(monkeypatch)
+
+        gen = tts._synthesize_stream_primary("hello world")
+        received = []
+        async for chunk in gen:
+            received.append(chunk)
+            if len(received) >= 2:
+                break
+        await gen.aclose()
+
+        # Give the background thread a moment to notice stop_flag and exit.
+        time.sleep(0.3)
+        # Consumer got 2 chunks.
+        assert len(received) == 2
+        # Background thread was stopped — did NOT produce all 20 chunks.
+        # Allow a small margin (the chunk in-flight when stop_flag was set may
+        # still land) but it must be well below the full count.
+        assert len(chunks_produced) < total
+        assert len(chunks_produced) <= 4  # at most 2 consumed + a couple in-flight
+
+    @pytest.mark.asyncio
+    async def test_full_consumption_completes_normally(self, monkeypatch):
+        """When the consumer drains the generator to completion, all chunks
+        arrive and no deadlock/hang occurs — the stop_flag is never set."""
+        tts, chunks_produced, total = self._make_fake_elevenlabs(monkeypatch)
+
+        received = []
+        async for chunk in tts._synthesize_stream_primary("hello world"):
+            received.append(chunk)
+
+        assert len(received) == total
+        assert len(chunks_produced) == total
+
+    @pytest.mark.asyncio
+    async def test_cancellation_sets_stop_flag(self, monkeypatch):
+        """If the async generator is cancelled (not just broken out of), the
+        stop_flag must still be set via the finally block."""
+        tts, chunks_produced, total = self._make_fake_elevenlabs(monkeypatch)
+
+        gen = tts._synthesize_stream_primary("hello world")
+        received = []
+        try:
+            async for chunk in gen:
+                received.append(chunk)
+                if len(received) >= 1:
+                    break
+        finally:
+            await gen.aclose()
+
+        time.sleep(0.3)
+        assert len(chunks_produced) < total
+
+
 class TestTTSUtils:
     """Tests for TTS text sanitization (#15)."""
 

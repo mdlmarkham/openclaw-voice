@@ -11,6 +11,7 @@ import asyncio
 import io
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Optional, AsyncGenerator
@@ -53,6 +54,7 @@ class ChatterboxTTS:
         self._supertonic_voice = os.environ.get("SUPERTONIC_VOICE", "F2")
         self._supertonic_model = os.environ.get("SUPERTONIC_MODEL", "supertonic-2")
         self._executor = executor
+        self._local_model_lock = threading.Lock()
         self.model = None
         self._backend = "mock"
         self._elevenlabs_client = None
@@ -443,20 +445,36 @@ class ChatterboxTTS:
         default — same pattern as Supertonic's ``_resolve_voice_style``. This
         must not mutate ``self.voice_sample`` so concurrent sessions sharing one
         instance never cross-contaminate (issue #10 / #25).
+
+        A per-instance ``_local_model_lock`` serializes the ``model.generate()``
+        / ``model.tts()`` call. Neither Chatterbox nor XTTS is thread-safe:
+        Chatterbox's ``generate()`` mutates ``self.conds`` via
+        ``prepare_conditionals()`` before reading it in ``t3.inference()``;
+        XTTS's ``Synthesizer.tts()`` mutates ``self.voice_dir`` and the GPT
+        model uses a shared KV cache. Without serialization, concurrent
+        sessions on the same instance would corrupt each other's voice
+        conditioning state (issue #27).
+
+        Throughput implication: local-backend synthesis is serialized — one
+        ``generate()``/``tts()`` at a time. Cloud backends (ElevenLabs, Edge)
+        and Supertonic (read-only style cache from #10) are unaffected and
+        remain concurrent.
         """
         voice_sample = voice or self.voice_sample
         if self._backend == "chatterbox":
-            if voice_sample:
-                audio = self.model.generate(text, audio_prompt=voice_sample)
-            else:
-                audio = self.model.generate(text)
+            with self._local_model_lock:
+                if voice_sample:
+                    audio = self.model.generate(text, audio_prompt=voice_sample)
+                else:
+                    audio = self.model.generate(text)
             return audio.cpu().numpy().astype(np.float32)
 
         elif self._backend == "xtts":
-            if voice_sample:
-                wav = self.model.tts(text=text, speaker_wav=voice_sample, language="en")
-            else:
-                wav = self.model.tts(text=text, language="en")
+            with self._local_model_lock:
+                if voice_sample:
+                    wav = self.model.tts(text=text, speaker_wav=voice_sample, language="en")
+                else:
+                    wav = self.model.tts(text=text, language="en")
             return np.array(wav, dtype=np.float32)
 
         else:

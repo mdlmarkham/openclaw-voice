@@ -86,11 +86,15 @@ async def lifespan(app: FastAPI):
     state.vad = results[2] if settings.vad_enabled else None
 
     # Record memory after load
-    if _rss_mb is not None:
+    try:
         mem_after = _rss_mb()
+    except Exception:
+        mem_after = None
+
+    if mem_after is not None and mem_before is not None:
         state.model_memory_mb = {
             "total_after_load_mb": mem_after,
-            "load_delta_mb": round(mem_after - (mem_before or 0), 1),
+            "load_delta_mb": round(mem_after - mem_before, 1),
         }
         logger.info(f"Memory after model load: {mem_after} MB (Δ {state.model_memory_mb['load_delta_mb']} MB)")
     else:

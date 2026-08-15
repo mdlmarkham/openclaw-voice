@@ -340,6 +340,16 @@ openclaw-voice/
 ├── Dockerfile               # GPU-enabled Docker image
 ```
 
+## Memory Footprint
+
+Typical warm RSS after startup:
+
+- **faster-whisper base + Supertonic** ≈ 2.0–2.4 GB
+- **faster-whisper small + Supertonic** ≈ 2.8–3.5 GB
+- **Remote STT + Edge/Higgs TTS, VAD disabled** ≈ 300–600 MB
+
+`/health` reports current `memory.rss_mb` and load delta; enable `OPENCLAW_METRICS_ENABLED=true` for Prometheus `/metrics`.
+
 ## License
 
 MIT License — see [LICENSE](LICENSE).

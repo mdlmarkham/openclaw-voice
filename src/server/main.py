@@ -38,6 +38,17 @@ async def lifespan(app: FastAPI):
     state._startup_time = time.time()
     logger.info("Initializing OpenClaw Voice server (Olympus)...")
 
+    # Memory instrumentation
+    try:
+        import psutil
+        _proc = psutil.Process()
+        def _rss_mb():
+            return round(_proc.memory_info().rss / 1024 / 1024, 1)
+    except Exception:
+        _rss_mb = lambda: None
+
+    mem_before = _rss_mb()
+
     load_keys_from_env()
     if settings.require_auth:
         logger.info("🔐 Authentication ENABLED")
@@ -47,8 +58,8 @@ async def lifespan(app: FastAPI):
     state.stt_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
     state.tts_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts")
 
-    logger.info("Loading STT, TTS, and VAD models (parallel)...")
-    state.stt, state.tts, state.vad = await asyncio.gather(
+    logger.info("Loading STT, TTS models (parallel)...")
+    tasks = [
         asyncio.to_thread(
             WhisperSTT,
             model_name=settings.stt_model,
@@ -62,8 +73,28 @@ async def lifespan(app: FastAPI):
             voice_sample=settings.tts_voice,
             executor=state.tts_executor,
         ),
-        asyncio.to_thread(VoiceActivityDetector),
-    )
+    ]
+    if settings.vad_enabled:
+        tasks.append(asyncio.to_thread(VoiceActivityDetector))
+        logger.info("Loading VAD model as well...")
+    else:
+        logger.info("VAD disabled, skipping load")
+
+    results = await asyncio.gather(*tasks)
+    state.stt = results[0]
+    state.tts = results[1]
+    state.vad = results[2] if settings.vad_enabled else None
+
+    # Record memory after load
+    if _rss_mb is not None:
+        mem_after = _rss_mb()
+        state.model_memory_mb = {
+            "total_after_load_mb": mem_after,
+            "load_delta_mb": round(mem_after - (mem_before or 0), 1),
+        }
+        logger.info(f"Memory after model load: {mem_after} MB (Δ {state.model_memory_mb['load_delta_mb']} MB)")
+    else:
+        state.model_memory_mb = {}
 
     higgs = HiggsTTS(
         api_key=settings.boson_api_key,

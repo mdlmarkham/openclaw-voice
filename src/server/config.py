@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     system_prompt: str = "unused_in_openclaw_mode"
 
     max_voice_upload_bytes: int = 10 * 1024 * 1024
+    metrics_enabled: bool = False
 
     model_config = ConfigDict(
         env_prefix="OPENCLAW_",

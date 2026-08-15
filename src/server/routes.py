@@ -155,10 +155,23 @@ async def favicon():
 @router.get("/health")
 async def health():
     """Health check — used by monitoring and client auto-reconnect."""
+    # RSS memory
+    try:
+        import psutil
+        rss_mb = round(psutil.Process().memory_info().rss / 1024 / 1024, 1)
+    except Exception:
+        rss_mb = None
+
+    memory_info = {"rss_mb": rss_mb}
+    model_mem = getattr(app_state, "model_memory_mb", {})
+    if model_mem:
+        memory_info.update(model_mem)
+
     return JSONResponse(
         {
             "status": "ok",
             "uptime_seconds": round(time.time() - app_state._startup_time, 1) if app_state._startup_time else 0,
+            "memory": memory_info,
             "stt": app_state.stt.status() if app_state.stt else {"backend": "not_loaded"},
             "tts": app_state.tts.status() if app_state.tts else {"backend": "not_loaded"},
             "tts_router": app_state.tts_router.status() if app_state.tts_router else None,
@@ -178,6 +191,42 @@ async def health():
             },
         }
     )
+
+
+@router.get("/metrics")
+async def metrics():
+    if not settings.metrics_enabled:
+        return JSONResponse(status_code=404, content={"error": "metrics disabled"})
+    try:
+        import psutil
+        rss_bytes = psutil.Process().memory_info().rss
+    except Exception:
+        rss_bytes = 0
+
+    lines = [
+        "# HELP process_resident_memory_bytes Resident memory size in bytes.",
+        "# TYPE process_resident_memory_bytes gauge",
+        f"process_resident_memory_bytes {rss_bytes}",
+    ]
+    if app_state.stt:
+        latency = app_state.stt.status().get("latency_ms")
+        if latency is not None:
+            lines += [
+                "# HELP openclaw_stt_latency_ms Last STT call latency in milliseconds.",
+                "# TYPE openclaw_stt_latency_ms gauge",
+                f"openclaw_stt_latency_ms {latency}",
+            ]
+    if app_state.tts_router:
+        # expose active backend as gauge 1/0
+        be = app_state.tts_router.active_backend
+        lines += [
+            "# HELP openclaw_tts_active_backend 1 if backend is active",
+            "# TYPE openclaw_tts_active_backend gauge",
+            f'openclaw_tts_active_backend{{backend="{be}"}} 1',
+        ]
+
+    from fastapi.responses import Response
+    return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @router.post("/api/keys")

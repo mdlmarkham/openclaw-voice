@@ -323,6 +323,144 @@ class TestAIBackendSessionIsolation:
         assert ctx_default.session_id is None
 
 
+class TestOpenClawModelResolution:
+    """Tests for issue #3: per-agent voice model resolution.
+
+    AIBackend._setup_client() used to unconditionally overwrite self.model to
+    "openclaw/metis" for gateway mode, ignoring the constructor's model param
+    and making OPENCLAW_VOICE_MODEL a no-op. Now self.model is preserved, and
+    chat_stream resolves the model per-request via resolve_openclaw_model()
+    which respects per-agent env overrides > global default > bare openclaw/<agent>.
+    """
+
+    def test_resolve_bare_agent_when_no_env_vars(self, monkeypatch):
+        """With no voice-model env vars set, model is bare openclaw/<agent>."""
+        from src.server.backend import resolve_openclaw_model
+
+        monkeypatch.setattr("src.server.config.settings.voice_model", None)
+        monkeypatch.setattr("src.server.config.settings.voice_model_metis", None)
+        monkeypatch.setattr("src.server.config.settings.voice_model_atlas", None)
+        assert resolve_openclaw_model("metis") == "openclaw/metis"
+        assert resolve_openclaw_model("atlas") == "openclaw/atlas"
+        assert resolve_openclaw_model(None) == "openclaw/metis"
+
+    def test_resolve_global_default(self, monkeypatch):
+        """Global OPENCLAW_VOICE_MODEL applies when no per-agent override."""
+        from src.server.backend import resolve_openclaw_model
+
+        monkeypatch.setattr("src.server.config.settings.voice_model", "glm-5.1:cloud")
+        monkeypatch.setattr("src.server.config.settings.voice_model_metis", None)
+        monkeypatch.setattr("src.server.config.settings.voice_model_atlas", None)
+        assert resolve_openclaw_model("metis", "glm-5.1:cloud") == "openclaw/metis/glm-5.1:cloud"
+        assert resolve_openclaw_model("atlas", "glm-5.1:cloud") == "openclaw/atlas/glm-5.1:cloud"
+
+    def test_per_agent_override_wins_over_global(self, monkeypatch):
+        """Per-agent env var overrides the global default."""
+        from src.server.backend import resolve_openclaw_model
+
+        monkeypatch.setattr("src.server.config.settings.voice_model", "glm-5.1:cloud")
+        monkeypatch.setattr("src.server.config.settings.voice_model_atlas", "gpt-4o")
+        assert resolve_openclaw_model("atlas", "glm-5.1:cloud") == "openclaw/atlas/gpt-4o"
+        # Other agents still use global
+        monkeypatch.setattr("src.server.config.settings.voice_model_metis", None)
+        assert resolve_openclaw_model("metis", "glm-5.1:cloud") == "openclaw/metis/glm-5.1:cloud"
+
+    def test_resolve_passes_through_prefixed_model(self, monkeypatch):
+        """If the model suffix already has a prefix (openclaw/, ollama/, etc.),
+        it's returned as-is without double-prefixing."""
+        from src.server.backend import resolve_openclaw_model
+
+        monkeypatch.setattr("src.server.config.settings.voice_model_metis", "openclaw/custom/model")
+        monkeypatch.setattr("src.server.config.settings.voice_model", None)
+        assert resolve_openclaw_model("metis") == "openclaw/custom/model"
+
+    def test_setup_client_does_not_clobber_model(self):
+        """Regression for #3: _setup_client() must not overwrite self.model
+        for backend_type == 'openclaw'."""
+        backend = AIBackend(
+            backend_type="openclaw",
+            url="https://fake-gateway.example/v1",
+            model="openclaw/atlas/glm-5.1:cloud",
+            api_key="fake",
+            system_prompt="",
+        )
+        assert backend.model == "openclaw/atlas/glm-5.1:cloud"
+
+    def test_chat_stream_resolves_model_from_agent_hint(self, monkeypatch):
+        """chat_stream must resolve the model from agent_hint via
+        resolve_openclaw_model() when no explicit model= is passed."""
+        backend = AIBackend(
+            backend_type="openclaw",
+            url="https://fake-gateway.example/v1",
+            model="openclaw/metis",
+            voice_model_default="glm-5.1:cloud",
+            api_key="fake",
+            system_prompt="",
+        )
+        backend._client = object()  # fake client so chat_stream takes the API path
+
+        # Intercept _chat_openai_stream to capture the model kwarg
+        captured_models = []
+
+        async def fake_stream(
+            user_message, model=None, agent_hint=None, reconnect=False, session_id="default"
+        ):
+            captured_models.append(model)
+            yield f"echo: {user_message}"
+
+        backend._chat_openai_stream = fake_stream
+
+        import asyncio
+
+        async def run():
+            async for _ in backend.chat_stream("hello", agent_hint="atlas"):
+                pass
+
+        asyncio.run(run())
+        assert captured_models[-1] == "openclaw/atlas/glm-5.1:cloud"
+
+    def test_chat_stream_explicit_model_overrides_resolution(self, monkeypatch):
+        """An explicit model= kwarg to chat_stream takes priority over
+        resolve_openclaw_model()."""
+        backend = AIBackend(
+            backend_type="openclaw",
+            url="https://fake-gateway.example/v1",
+            model="openclaw/metis",
+            voice_model_default="glm-5.1:cloud",
+            api_key="fake",
+            system_prompt="",
+        )
+        backend._client = object()  # fake client so chat_stream takes the API path
+
+        captured_models = []
+
+        async def fake_stream(
+            user_message, model=None, agent_hint=None, reconnect=False, session_id="default"
+        ):
+            captured_models.append(model)
+            yield f"echo: {user_message}"
+
+        backend._chat_openai_stream = fake_stream
+
+        import asyncio
+
+        async def run():
+            async for _ in backend.chat_stream("hello", model="custom-model", agent_hint="atlas"):
+                pass
+
+        asyncio.run(run())
+        assert captured_models[-1] == "custom-model"
+
+    def test_openai_backend_uses_self_model(self):
+        """Non-openclaw backends use self.model, not resolve_openclaw_model()."""
+        backend = AIBackend(
+            backend_type="openai",
+            model="gpt-4o-mini",
+            api_key="fake",
+        )
+        assert backend._resolve_model("atlas") == "gpt-4o-mini"
+
+
 class TestVAD:
     """Tests for Voice Activity Detection module."""
 

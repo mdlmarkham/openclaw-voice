@@ -41,7 +41,9 @@ async def lifespan(app: FastAPI):
     # Memory instrumentation
     try:
         import psutil
+
         _proc = psutil.Process()
+
         def _rss_mb():
             return round(_proc.memory_info().rss / 1024 / 1024, 1)
     except Exception:
@@ -97,7 +99,9 @@ async def lifespan(app: FastAPI):
             "total_after_load_mb": mem_after,
             "load_delta_mb": round(mem_after - mem_before, 1),
         }
-        logger.info(f"Memory after model load: {mem_after} MB (Δ {state.model_memory_mb['load_delta_mb']} MB)")
+        logger.info(
+            f"Memory after model load: {mem_after} MB (Δ {state.model_memory_mb['load_delta_mb']} MB)"
+        )
     else:
         state.model_memory_mb = {}
 
@@ -117,9 +121,7 @@ async def lifespan(app: FastAPI):
             "⚠️ STT is in MOCK mode — install faster-whisper or openai-whisper for real speech recognition"
         )
     if state.tts._backend == "mock" and not higgs.available:
-        logger.error(
-            "❌ No TTS backend available — set BOSON_API_KEY or ELEVENLABS_API_KEY"
-        )
+        logger.error("❌ No TTS backend available — set BOSON_API_KEY or ELEVENLABS_API_KEY")
     elif higgs.available:
         logger.info("🔊 Higgs Audio v3 TTS backend available")
     elif state.tts._backend != "elevenlabs":
@@ -136,29 +138,15 @@ async def lifespan(app: FastAPI):
         )
 
     if gateway_url and gateway_token:
-        if settings.voice_model:
-            voice_model_id = settings.voice_model
-            if not voice_model_id.startswith(("openclaw/", "ollama/", "nvidia/", "synthetic/")):
-                voice_model_id = f"openclaw/metis/{voice_model_id}"
-            logger.info(
-                f"🦞 Connecting to OpenClaw gateway: {gateway_url} (voice model: {voice_model_id})"
-            )
-            state.backend = AIBackend(
-                backend_type="openclaw",
-                url=f"{gateway_url}/v1",
-                model=voice_model_id,
-                api_key=gateway_token,
-                system_prompt=settings.system_prompt,
-            )
-        else:
-            logger.info(f"🦞 Connecting to OpenClaw gateway: {gateway_url} (agent default model)")
-            state.backend = AIBackend(
-                backend_type="openclaw",
-                url=f"{gateway_url}/v1",
-                model="openclaw/metis",
-                api_key=gateway_token,
-                system_prompt=settings.system_prompt,
-            )
+        logger.info(f"🦞 Connecting to OpenClaw gateway: {gateway_url}")
+        state.backend = AIBackend(
+            backend_type="openclaw",
+            url=f"{gateway_url}/v1",
+            model="openclaw/metis",  # startup default; overridden per-request by agent_hint
+            voice_model_default=settings.voice_model,
+            api_key=gateway_token,
+            system_prompt=settings.system_prompt,
+        )
     else:
         logger.warning(
             "⚠️ Using direct OpenAI backend — conversation history is global (shared across all clients). "
@@ -240,6 +228,7 @@ if __name__ == "__main__":
                 request = data.decode("utf-8", errors="replace")
                 # Replace the Host header to point to localhost:8443 (TLS server)
                 import re
+
                 request = re.sub(
                     r"Host: [^\r\n]+",
                     f"Host: 127.0.0.1:{settings.port}",
@@ -290,7 +279,9 @@ if __name__ == "__main__":
                 tls_server.serve(),
             )
 
-        logger.info(f"Dual listener: TLS on :{settings.port}, plain HTTP on 127.0.0.1:{plain_port} (for Tailscale Serve)")
+        logger.info(
+            f"Dual listener: TLS on :{settings.port}, plain HTTP on 127.0.0.1:{plain_port} (for Tailscale Serve)"
+        )
         asyncio.run(serve_both())
     else:
         uvicorn.run(

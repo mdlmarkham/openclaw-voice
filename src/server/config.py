@@ -35,7 +35,14 @@ class Settings(BaseSettings):
 
     openclaw_gateway_url: Optional[str] = None
     openclaw_gateway_token: Optional[str] = None
-    voice_model: Optional[str] = None
+    voice_model: Optional[str] = None  # global fallback, e.g. "glm-5.1:cloud"
+    # Per-agent model overrides (env: OPENCLAW_VOICE_MODEL_METIS, etc.)
+    voice_model_metis: Optional[str] = None
+    voice_model_atlas: Optional[str] = None
+    voice_model_hephaestus: Optional[str] = None
+    voice_model_clio: Optional[str] = None
+    voice_model_deepthought: Optional[str] = None
+    voice_model_mara: Optional[str] = None
 
     # TTS backend selection: "auto" | "higgs" | "supertonic" (default: auto)
     tts_backend: str = "auto"

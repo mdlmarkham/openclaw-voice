@@ -24,6 +24,7 @@ from .auth import PRICING_TIERS, APIKey, token_manager, require_api_key, _valida
 from .config import VOICES_DIR, settings
 from .session import SessionContext
 from . import state as app_state
+from .text_utils import sanitize_tts_symbols
 from .transport import WebSocketTransport
 from .tts import ChatterboxTTS
 from .vad import VADEndpoint
@@ -293,13 +294,8 @@ async def speak(
         return JSONResponse(status_code=503, content={"error": "TTS not available"})
     
     try:
-        # Sanitize text for TTS (Supertonic doesn't support some characters)
-        import re as _re
-        tts_text = text
-        tts_text = _re.sub(r'[*_#`~=]', '', tts_text)
-        tts_text = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)
-        tts_text = tts_text.replace('=', ' equals ')
-        tts_text = _re.sub(r'\s+', ' ', tts_text).strip()
+        # Sanitize text for TTS
+        tts_text = sanitize_tts_symbols(text)
         
         # Synthesize the full text
         audio_chunks = []
@@ -395,14 +391,8 @@ async def chat(
         if not response_text.strip():
             return JSONResponse(status_code=500, content={"error": "LLM returned empty response"})
         
-        # Sanitize text for TTS (Supertonic doesn't support some characters)
-        import re
-        tts_text = response_text.strip()
-        # Remove markdown formatting that TTS can't handle
-        tts_text = re.sub(r'[*_#`~=]', '', tts_text)  # bold, italic, heading, code, strikethrough
-        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # links → text
-        tts_text = tts_text.replace('=', ' equals ')  # Supertonic can't handle =
-        tts_text = re.sub(r'\s+', ' ', tts_text).strip()  # collapse whitespace
+        # Sanitize text for TTS
+        tts_text = sanitize_tts_symbols(response_text)
         
         # Synthesize
         audio_chunks = []
@@ -487,12 +477,7 @@ async def chat_json(
             return JSONResponse(status_code=500, content={"error": "LLM returned empty response"})
         
         # Sanitize for TTS
-        import re
-        tts_text = response_text.strip()
-        tts_text = re.sub(r'[*_#`~=]', '', tts_text)
-        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)
-        tts_text = tts_text.replace('=', ' equals ')
-        tts_text = re.sub(r'\s+', ' ', tts_text).strip()
+        tts_text = sanitize_tts_symbols(response_text)
         
         # Synthesize
         audio_chunks = []

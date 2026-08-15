@@ -80,3 +80,15 @@ def estimate_speech_duration(text: str, wpm: int = 150) -> float:
     """
     word_count = len(text.split())
     return (word_count / wpm) * 60
+
+
+_RE_EQUALS = re.compile(r"=")
+
+
+def sanitize_tts_symbols(text: str) -> str:
+    """Full TTS sanitization used by REST handlers: clean_for_speech plus
+    symbol substitutions some TTS backends (e.g. Supertonic) can't pronounce."""
+    text = clean_for_speech(text)
+    text = _RE_EQUALS.sub(" equals ", text)
+    text = _RE_MULTI_SPACE.sub(" ", text).strip()
+    return text

@@ -192,6 +192,30 @@ class TestTTSRouter:
         assert router.active_backend == "supertonic"
 
 
+class TestTTSUtils:
+    """Tests for TTS text sanitization (#15)."""
+
+    def test_sanitize_tts_symbols_basic(self):
+        from src.server.text_utils import sanitize_tts_symbols
+
+        text = "**bold** `code` [link](http://example.com) #hashtag a=b  "
+        out = sanitize_tts_symbols(text)
+        # markdown stripped, hashtag stripped, equals expanded, whitespace collapsed
+        assert "**" not in out
+        assert "`" not in out
+        assert "[link]" not in out
+        assert "http://example.com" not in out
+        assert "hashtag" in out
+        assert "equals" in out
+        assert "  " not in out
+        assert out.strip() == out
+
+    def test_sanitize_preserves_clean_text(self):
+        from src.server.text_utils import sanitize_tts_symbols
+        text = "Hello world"
+        assert sanitize_tts_symbols(text) == "Hello world"
+
+
 class TestIntegration:
     """Integration tests for the full pipeline."""
 

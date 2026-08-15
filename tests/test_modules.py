@@ -345,34 +345,36 @@ class TestOpenClawModelResolution:
         assert resolve_openclaw_model(None) == "openclaw/metis"
 
     def test_resolve_global_default(self, monkeypatch):
-        """Global OPENCLAW_VOICE_MODEL applies when no per-agent override."""
+        """The gateway only accepts `openclaw/<agentId>` — global model overrides
+        are NOT passed as a raw model name (that causes a 400 Invalid model).
+        The agent's model is selected by the gateway itself."""
         from src.server.backend import resolve_openclaw_model
 
         monkeypatch.setattr("src.server.config.settings.voice_model", "glm-5.1:cloud")
         monkeypatch.setattr("src.server.config.settings.voice_model_metis", None)
         monkeypatch.setattr("src.server.config.settings.voice_model_atlas", None)
-        assert resolve_openclaw_model("metis", "glm-5.1:cloud") == "openclaw/metis/glm-5.1:cloud"
-        assert resolve_openclaw_model("atlas", "glm-5.1:cloud") == "openclaw/atlas/glm-5.1:cloud"
+        assert resolve_openclaw_model("metis", "glm-5.1:cloud") == "openclaw/metis"
+        assert resolve_openclaw_model("atlas", "glm-5.1:cloud") == "openclaw/atlas"
 
     def test_per_agent_override_wins_over_global(self, monkeypatch):
-        """Per-agent env var overrides the global default."""
+        """Per-agent env vars are ignored for the gateway call — the gateway
+        only accepts `openclaw/<agentId>` and selects the agent's model itself."""
         from src.server.backend import resolve_openclaw_model
 
         monkeypatch.setattr("src.server.config.settings.voice_model", "glm-5.1:cloud")
         monkeypatch.setattr("src.server.config.settings.voice_model_atlas", "gpt-4o")
-        assert resolve_openclaw_model("atlas", "glm-5.1:cloud") == "openclaw/atlas/gpt-4o"
-        # Other agents still use global
+        assert resolve_openclaw_model("atlas", "glm-5.1:cloud") == "openclaw/atlas"
         monkeypatch.setattr("src.server.config.settings.voice_model_metis", None)
-        assert resolve_openclaw_model("metis", "glm-5.1:cloud") == "openclaw/metis/glm-5.1:cloud"
+        assert resolve_openclaw_model("metis", "glm-5.1:cloud") == "openclaw/metis"
 
-    def test_resolve_passes_through_prefixed_model(self, monkeypatch):
-        """If the model suffix already has a prefix (openclaw/, ollama/, etc.),
-        it's returned as-is without double-prefixing."""
+    def test_resolve_always_returns_agent_id(self, monkeypatch):
+        """Even a prefixed model suffix must not be passed raw — the gateway
+        rejects anything other than `openclaw` or `openclaw/<agentId>`."""
         from src.server.backend import resolve_openclaw_model
 
         monkeypatch.setattr("src.server.config.settings.voice_model_metis", "openclaw/custom/model")
         monkeypatch.setattr("src.server.config.settings.voice_model", None)
-        assert resolve_openclaw_model("metis") == "openclaw/custom/model"
+        assert resolve_openclaw_model("metis") == "openclaw/metis"
 
     def test_setup_client_does_not_clobber_model(self):
         """Regression for #3: _setup_client() must not overwrite self.model
@@ -417,7 +419,7 @@ class TestOpenClawModelResolution:
                 pass
 
         asyncio.run(run())
-        assert captured_models[-1] == "openclaw/atlas/glm-5.1:cloud"
+        assert captured_models[-1] == "openclaw/atlas"
 
     def test_chat_stream_explicit_model_overrides_resolution(self, monkeypatch):
         """An explicit model= kwarg to chat_stream takes priority over

@@ -52,15 +52,34 @@ class VoiceActivityDetector:
             self.model = None
 
     def is_speech(self, audio: np.ndarray, sample_rate: int = 16000) -> bool:
-        """Return True if audio frame contains speech above threshold."""
+        """Return True if audio contains speech above threshold.
+
+        Silero VAD requires fixed-size input windows (512 samples @16kHz,
+        256 @8kHz). Incoming frames from the client are larger (e.g. 4096
+        samples), so we chunk into model-sized windows and return True if
+        ANY window is speech. This keeps the status indicator responsive
+        regardless of the client's capture buffer size.
+        """
         if self.model is None:
             return True
         try:
             import torch
 
-            audio_tensor = torch.from_numpy(np.ascontiguousarray(audio).copy())
-            speech_prob = self.model(audio_tensor, sample_rate).item()
-            return speech_prob > self.threshold
+            window = 512 if sample_rate == 16000 else 256
+            audio = np.ascontiguousarray(audio).astype(np.float32, copy=False)
+            # Pad to a multiple of window so the tail isn't dropped
+            if len(audio) % window != 0:
+                pad = window - (len(audio) % window)
+                audio = np.pad(audio, (0, pad))
+            for i in range(0, len(audio), window):
+                chunk = audio[i : i + window]
+                if len(chunk) < window:
+                    break
+                audio_tensor = torch.from_numpy(np.ascontiguousarray(chunk))
+                speech_prob = self.model(audio_tensor, sample_rate).item()
+                if speech_prob > self.threshold:
+                    return True
+            return False
         except Exception as e:
             logger.error(f"VAD error: {e}")
             return True
@@ -115,9 +134,19 @@ class VADEndpoint:
         return self._state in (VADState.SPEAKING, VADState.STOPPING)
 
     async def process_async(self, audio: np.ndarray) -> Optional[str]:
-        """Async version of process using async VAD."""
-        has_speech = await self._vad.is_speech_async(audio, self._sample_rate)
-        return self._advance_state(has_speech)
+        """Async version of process using async VAD.
+
+        Iterates over model-sized windows so the endpointing state machine
+        advances per-window (matching the min_silence/min_speech frame counts).
+        Returns the LAST transition event, or None.
+        """
+        last_event = None
+        for chunk in self._iter_windows(audio):
+            has_speech = await self._vad.is_speech_async(chunk, self._sample_rate)
+            ev = self._advance_state(has_speech)
+            if ev:
+                last_event = ev
+        return last_event
 
     def process(self, audio: np.ndarray) -> Optional[str]:
         """
@@ -131,8 +160,20 @@ class VADEndpoint:
             VADEvent.SPEECH_END when user stops (after hangover)
             None if no state transition
         """
-        has_speech = self._vad.is_speech(audio, self._sample_rate)
-        return self._advance_state(has_speech)
+        last_event = None
+        for chunk in self._iter_windows(audio):
+            has_speech = self._vad.is_speech(chunk, self._sample_rate)
+            ev = self._advance_state(has_speech)
+            if ev:
+                last_event = ev
+        return last_event
+
+    def _iter_windows(self, audio: np.ndarray):
+        """Yield model-sized windows (512 @16k / 256 @8k) from the input."""
+        window = 512 if self._sample_rate == 16000 else 256
+        audio = np.ascontiguousarray(audio).astype(np.float32, copy=False)
+        for i in range(0, len(audio) - window + 1, window):
+            yield audio[i : i + window]
 
     def _advance_state(self, has_speech: bool) -> Optional[str]:
         if self._state == VADState.SILENT:

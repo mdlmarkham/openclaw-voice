@@ -1066,19 +1066,24 @@
                 }
                 mediaStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
-                        sampleRate: 16000,
+                        // Do NOT force sampleRate here — many browsers ignore it and
+                        // the mismatch with the AudioContext can produce silent capture.
+                        // Let the browser use its native rate; the ScriptProcessor
+                        // resamples to 16kHz below.
                         channelCount: 1,
                         echoCancellation: true,
                         noiseSuppression: true,
                     }
                 });
                 
-                // Recording context — Safari may override sampleRate
+                // Recording context — use the browser's native rate so the mic
+                // track and context rates match (forcing 16000 can cause silent
+                // capture). The ScriptProcessor resamples to 16kHz below.
                 if (audioContext && audioContext.state !== 'closed') {
                     audioContext.close();
                 }
                 try {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 } catch (e) {
                     audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 }

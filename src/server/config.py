@@ -22,6 +22,8 @@ class Settings(BaseSettings):
 
     stt_model: str = "base"
     stt_device: str = "auto"
+    stt_url: Optional[str] = None
+    stt_remote_timeout_seconds: int = 10
 
     tts_model: str = "edge"
     tts_voice: Optional[str] = None

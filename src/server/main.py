@@ -54,6 +54,8 @@ async def lifespan(app: FastAPI):
             model_name=settings.stt_model,
             device=settings.stt_device,
             executor=state.stt_executor,
+            remote_url=settings.stt_url,
+            remote_timeout=settings.stt_remote_timeout_seconds,
         ),
         asyncio.to_thread(
             ChatterboxTTS,

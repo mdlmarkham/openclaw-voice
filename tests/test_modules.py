@@ -353,6 +353,162 @@ class TestTTSVoiceConcurrency:
         assert calls[-1]["style"] == "style:F5"
 
 
+class TestTTSVoiceCloningLocalBackend:
+    """Regression tests for issue #25: per-call voice cloning (set_voice) was
+    dead code on the chatterbox/xtts backend after #10.
+
+    #10 correctly removed the shared-mutation ``self.voice_sample = voice_path``
+    from set_voice but added no replacement per-call threading for the local
+    (chatterbox/xtts) path. ``_synthesize_sync_local`` only ever read
+    ``self.voice_sample`` (set once at construction), so the highest-value
+    voice_cloning case silently did nothing. The fix threads ``voice`` through
+    ``synthesize`` → ``_synthesize_sync_local`` (same pattern as Supertonic's
+    ``_resolve_voice_style``), falling back to ``self.voice_sample`` only when
+    no per-call override is given.
+    """
+
+    def _make_fake_local(self, monkeypatch, backend):
+        """Return (ChatterboxTTS forced to a fake chatterbox/xtts backend, calls).
+
+        The fake model records the voice argument it received (``audio_prompt``
+        for chatterbox, ``speaker_wav`` for xtts) and, when ``model.barrier`` is
+        set, blocks so two concurrent calls deterministically overlap inside the
+        executor — the exact precondition for cross-talk.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.setattr(ChatterboxTTS, "_load_model", lambda self: None)
+        tts = ChatterboxTTS(executor=ThreadPoolExecutor(max_workers=4))
+        tts._backend = backend
+        # Constructor-time default is None — per-call voice must reach the model.
+        tts.voice_sample = None
+
+        calls = []
+
+        class _FakeTensor:
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return np.zeros(2400, dtype=np.float32)
+
+        if backend == "chatterbox":
+
+            class FakeModel:
+                def __init__(self):
+                    self.barrier = None
+
+                def generate(self, text, audio_prompt=None):
+                    rec = {"text": text, "voice": audio_prompt, "start": time.monotonic()}
+                    calls.append(rec)
+                    if self.barrier is not None:
+                        self.barrier.wait()
+                    rec["end"] = time.monotonic()
+                    return _FakeTensor()
+
+            tts.model = FakeModel()
+        else:
+
+            class FakeModel:
+                def __init__(self):
+                    self.barrier = None
+
+                def tts(self, text, speaker_wav=None, language="en"):
+                    rec = {"text": text, "voice": speaker_wav, "start": time.monotonic()}
+                    calls.append(rec)
+                    if self.barrier is not None:
+                        self.barrier.wait()
+                    rec["end"] = time.monotonic()
+                    return np.zeros(2400, dtype=np.float32)
+
+            tts.model = FakeModel()
+
+        return tts, calls
+
+    @pytest.mark.asyncio
+    async def test_chatterbox_per_call_voice_reaches_generate(self, monkeypatch):
+        """Regression for #25: a per-call voice must reach model.generate as
+        audio_prompt even when self.voice_sample is None (the bug: it was
+        always None)."""
+        tts, calls = self._make_fake_local(monkeypatch, "chatterbox")
+        async for _ in tts.synthesize_stream("hello", voice="/voices/clone_a.wav"):
+            pass
+        assert calls[-1]["voice"] == "/voices/clone_a.wav"
+
+    @pytest.mark.asyncio
+    async def test_xtts_per_call_voice_reaches_tts(self, monkeypatch):
+        """Regression for #25: a per-call voice must reach model.tts as
+        speaker_wav on the xtts backend."""
+        tts, calls = self._make_fake_local(monkeypatch, "xtts")
+        async for _ in tts.synthesize_stream("hello", voice="/voices/clone_b.wav"):
+            pass
+        assert calls[-1]["voice"] == "/voices/clone_b.wav"
+
+    @pytest.mark.asyncio
+    async def test_local_falls_back_to_instance_voice_sample(self, monkeypatch):
+        """When no per-call voice is given, the constructor-time
+        self.voice_sample default is used (same fallback pattern as
+        Supertonic's _resolve_voice_style)."""
+        tts, calls = self._make_fake_local(monkeypatch, "chatterbox")
+        tts.voice_sample = "/voices/default.wav"
+        async for _ in tts.synthesize_stream("hello"):
+            pass
+        assert calls[-1]["voice"] == "/voices/default.wav"
+
+    @pytest.mark.asyncio
+    async def test_per_call_voice_does_not_mutate_instance(self, monkeypatch):
+        """A per-call voice must not be written back to self.voice_sample —
+        that would reintroduce the #10 cross-session race on this backend."""
+        tts, calls = self._make_fake_local(monkeypatch, "chatterbox")
+        assert tts.voice_sample is None
+        async for _ in tts.synthesize_stream("hello", voice="/voices/clone_a.wav"):
+            pass
+        assert tts.voice_sample is None  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_router_forwards_voice_to_local_backend(self, monkeypatch):
+        """End-to-end through TTSRouter: an explicit per-call voice must reach
+        model.generate on a chatterbox-backed ChatterboxTTS (the router path
+        flows through the _synthesize_stream_primary fallback branch fixed in
+        #25)."""
+        tts, calls = self._make_fake_local(monkeypatch, "chatterbox")
+        router = TTSRouter(supertonic=tts, higgs=None, backend="supertonic", cache=TTSCache())
+        async for _ in router.synthesize_stream("hi", voice="/voices/clone_a.wav"):
+            pass
+        assert calls[-1]["voice"] == "/voices/clone_a.wav"
+
+    @pytest.mark.asyncio
+    async def test_chatterbox_concurrent_voices_no_cross_contamination(self, monkeypatch):
+        """Two concurrent synthesize_stream calls with different per-call voices
+        against one shared instance must each receive their own voice — never
+        None and never the other session's voice.
+
+        NOTE: this verifies *parameter* threading isolation. Whether the
+        underlying chatterbox/xtts model object is itself safe for concurrent
+        .generate()/.tts() calls is a separate concern tracked in a follow-up
+        issue — do not assume it is fine just because the parameters are.
+        """
+        tts, calls = self._make_fake_local(monkeypatch, "chatterbox")
+        tts.model.barrier = threading.Barrier(2, timeout=10)
+
+        async def run(text, voice):
+            async for _ in tts.synthesize_stream(text, voice=voice):
+                pass
+
+        await asyncio.gather(
+            run("alpha sentence", voice="/voices/clone_a.wav"),
+            run("bravo sentence", voice="/voices/clone_b.wav"),
+        )
+
+        by_text = {c["text"]: c for c in calls}
+        assert by_text["alpha sentence"]["voice"] == "/voices/clone_a.wav"
+        assert by_text["bravo sentence"]["voice"] == "/voices/clone_b.wav"
+        # Neither call dropped the voice (the original bug). The Barrier(2)
+        # not raising BrokenBarrierError proves both were inside generate()
+        # simultaneously — the exact precondition for cross-talk.
+        assert all(c["voice"] is not None for c in calls)
+
+
 class TestTTSUtils:
     """Tests for TTS text sanitization (#15)."""
 

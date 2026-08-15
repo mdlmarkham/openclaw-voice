@@ -46,7 +46,11 @@ class ChatterboxTTS:
     ):
         self.voice_sample = voice_sample
         self.device = device
-        self.voice_id = voice_id or "cgSgspJ2msm6clMCkdW9"  # Jessica
+        self.voice_id = (
+            voice_id
+            or os.environ.get("ELEVENLABS_VOICE_ID")
+            or "cgSgspJ2msm6clMCkdW9"  # Jessica
+        )
         self._edge_voice = os.environ.get("EDGE_TTS_VOICE", "en-US-JennyNeural")
         self._supertonic_voice = os.environ.get("SUPERTONIC_VOICE", "F2")
         self._supertonic_model = os.environ.get("SUPERTONIC_MODEL", "supertonic-2")

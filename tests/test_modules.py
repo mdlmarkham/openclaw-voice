@@ -61,6 +61,24 @@ class TestChatterboxTTS:
             "mock",
         ]
 
+    def test_voice_id_from_env(self, monkeypatch):
+        """ELEVENLABS_VOICE_ID env var should populate self.voice_id (#16)."""
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "abc123Voice")
+        tts = ChatterboxTTS()
+        assert tts.voice_id == "abc123Voice"
+
+    def test_voice_id_explicit_overrides_env(self, monkeypatch):
+        """Explicit voice_id arg should win over env var (#16)."""
+        monkeypatch.setenv("ELEVENLABS_VOICE_ID", "envVoiceId")
+        tts = ChatterboxTTS(voice_id="explicitVoiceId")
+        assert tts.voice_id == "explicitVoiceId"
+
+    def test_voice_id_default_when_unset(self, monkeypatch):
+        """Default Jessica voice should be used when nothing is configured (#16)."""
+        monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+        tts = ChatterboxTTS()
+        assert tts.voice_id == "cgSgspJ2msm6clMCkdW9"
+
     @pytest.mark.asyncio
     async def test_synthesize_returns_audio(self):
         """Test that synthesize returns numpy array."""

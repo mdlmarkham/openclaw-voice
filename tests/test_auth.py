@@ -8,7 +8,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.server.auth import TokenManager, PRICING_TIERS
+from fastapi import HTTPException
+
+from src.server.auth import TokenManager, PRICING_TIERS, _validate_and_ratelimit, token_manager
 
 
 class TestTokenManager:
@@ -117,6 +119,62 @@ class TestTokenManager:
         _, pro_key = tm.generate_key("pro-user", tier="pro", rate_limit=120, monthly_minutes=500)
         assert pro_key.tier == "pro"
         assert pro_key.monthly_minutes == 500
+
+
+class TestValidateAndRatelimit:
+    """Tests for the shared auth dependency used by REST routes and the WS handshake."""
+
+    async def test_auth_disabled_no_key_returns_none(self, monkeypatch):
+        from src.server.config import settings
+
+        monkeypatch.setattr(settings, "require_auth", False)
+        assert await _validate_and_ratelimit(None) is None
+
+    async def test_auth_disabled_with_valid_key_returns_key(self, monkeypatch):
+        from src.server.config import settings
+
+        monkeypatch.setattr(settings, "require_auth", False)
+        plaintext, api_key = token_manager.generate_key("disabled-mode-user")
+        result = await _validate_and_ratelimit(plaintext)
+        assert result is not None
+        assert result.key_id == api_key.key_id
+
+    async def test_auth_required_no_key_raises_401(self, monkeypatch):
+        from src.server.config import settings
+
+        monkeypatch.setattr(settings, "require_auth", True)
+        with pytest.raises(HTTPException) as exc_info:
+            await _validate_and_ratelimit(None)
+        assert exc_info.value.status_code == 401
+
+    async def test_auth_required_invalid_key_raises_401(self, monkeypatch):
+        from src.server.config import settings
+
+        monkeypatch.setattr(settings, "require_auth", True)
+        with pytest.raises(HTTPException) as exc_info:
+            await _validate_and_ratelimit("ocv_not_a_real_key")
+        assert exc_info.value.status_code == 401
+
+    async def test_auth_required_valid_key_returns_key(self, monkeypatch):
+        from src.server.config import settings
+
+        monkeypatch.setattr(settings, "require_auth", True)
+        plaintext, api_key = token_manager.generate_key("required-mode-user", rate_limit=60)
+        result = await _validate_and_ratelimit(plaintext)
+        assert result is not None
+        assert result.key_id == api_key.key_id
+
+    async def test_auth_required_rate_limit_raises_429(self, monkeypatch):
+        from src.server.config import settings
+
+        monkeypatch.setattr(settings, "require_auth", True)
+        plaintext, _ = token_manager.generate_key("rate-limited-user", rate_limit=2)
+
+        assert await _validate_and_ratelimit(plaintext) is not None
+        assert await _validate_and_ratelimit(plaintext) is not None
+        with pytest.raises(HTTPException) as exc_info:
+            await _validate_and_ratelimit(plaintext)
+        assert exc_info.value.status_code == 429
 
 
 class TestPricingTiers:

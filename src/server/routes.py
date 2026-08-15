@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Optional, Dict
 
 import numpy as np
-from fastapi import APIRouter, Body, WebSocket
+from fastapi import APIRouter, Body, Depends, HTTPException, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from loguru import logger
 
-from .auth import PRICING_TIERS, APIKey, token_manager
+from .auth import PRICING_TIERS, APIKey, token_manager, require_api_key, _validate_and_ratelimit
 from .config import VOICES_DIR, settings
 from .session import SessionContext
 from . import state as app_state
@@ -183,7 +183,7 @@ async def create_api_key(
         if not master_key and not settings.master_key:
             return {"error": "Master key required"}
         provided_key = master_key or ""
-        if provided_key != settings.master_key:
+        if not secrets.compare_digest(provided_key, settings.master_key or ""):
             key = token_manager.validate_key(provided_key)
             if not key or key.tier != "enterprise":
                 return {"error": "Invalid master key"}
@@ -217,7 +217,11 @@ async def get_usage(api_key: str):
 
 
 @router.post("/api/voices")
-async def upload_voice(name: str = Body(...), file: bytes = Body(...)):
+async def upload_voice(
+    name: str = Body(...),
+    file: bytes = Body(...),
+    api_key: Optional[APIKey] = Depends(require_api_key),
+):
     """Upload a voice sample for TTS cloning. Returns a voice ID."""
     VOICES_DIR.mkdir(exist_ok=True)
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", name)[:64] or "voice"
@@ -230,7 +234,7 @@ async def upload_voice(name: str = Body(...), file: bytes = Body(...)):
 
 
 @router.get("/api/voices")
-async def list_voices():
+async def list_voices(api_key: Optional[APIKey] = Depends(require_api_key)):
     """List available voice samples."""
     VOICES_DIR.mkdir(exist_ok=True)
     voices = []
@@ -248,6 +252,7 @@ async def speak(
     agent: str = Body(default="metis"),
     voice: str = Body(default=None),
     format: str = Body(default="wav"),
+    api_key: Optional[APIKey] = Depends(require_api_key),
 ):
     """REST TTS endpoint — text in, audio out. For iOS Shortcuts, scripting, etc.
     
@@ -290,7 +295,13 @@ async def speak(
         # Concatenate all chunks into a single buffer
         # Chunks are raw PCM bytes (int16 at 24kHz mono)
         pcm_bytes = b''.join(audio_chunks)
-        
+
+        if api_key is not None:
+            minutes = len(pcm_bytes) / 2 / 24000 / 60
+            if not token_manager.check_monthly_quota(api_key, minutes):
+                return JSONResponse(status_code=402, content={"error": "Monthly quota exceeded"})
+            token_manager.record_usage(api_key, minutes)
+
         if format == "pcm":
             # Raw 16-bit PCM at 24kHz mono
             return Response(
@@ -332,6 +343,7 @@ async def chat(
     agent: str = Body(default="metis"),
     session_id: str = Body(default=None),
     format: str = Body(default="wav"),
+    api_key: Optional[APIKey] = Depends(require_api_key),
 ):
     """Full voice chat endpoint — text in, spoken response out.
     
@@ -384,7 +396,13 @@ async def chat(
             return JSONResponse(status_code=500, content={"error": "TTS produced no audio"})
         
         pcm_bytes = b''.join(audio_chunks)
-        
+
+        if api_key is not None:
+            minutes = len(pcm_bytes) / 2 / 24000 / 60
+            if not token_manager.check_monthly_quota(api_key, minutes):
+                return JSONResponse(status_code=402, content={"error": "Monthly quota exceeded"})
+            token_manager.record_usage(api_key, minutes)
+
         if format == "pcm":
             return Response(
                 content=pcm_bytes,
@@ -421,6 +439,7 @@ async def chat_json(
     text: str = Body(..., embed=True),
     agent: str = Body(default="metis"),
     session_id: str = Body(default=None),
+    api_key: Optional[APIKey] = Depends(require_api_key),
 ):
     """Chat endpoint returning JSON with both audio (base64 WAV) and session_id.
     
@@ -467,7 +486,13 @@ async def chat_json(
             return JSONResponse(status_code=500, content={"error": "TTS produced no audio"})
         
         pcm_bytes = b''.join(audio_chunks)
-        
+
+        if api_key is not None:
+            minutes = len(pcm_bytes) / 2 / 24000 / 60
+            if not token_manager.check_monthly_quota(api_key, minutes):
+                return JSONResponse(status_code=402, content={"error": "Monthly quota exceeded"})
+            token_manager.record_usage(api_key, minutes)
+
         # Encode as WAV
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
@@ -494,23 +519,17 @@ async def chat_json(
 async def websocket_endpoint(websocket: WebSocket):
     """Handle voice WebSocket connections."""
     api_key_str = websocket.query_params.get("api_key") or websocket.headers.get("x-api-key")
-    api_key: Optional[APIKey] = None
 
-    if settings.require_auth:
-        if not api_key_str:
-            await websocket.close(code=4001, reason="API key required")
-            return
-        api_key = token_manager.validate_key(api_key_str)
-        if not api_key:
-            await websocket.close(code=4002, reason="Invalid API key")
-            return
-        if not await token_manager.check_rate_limit(api_key):
-            await websocket.close(code=4003, reason="Rate limit exceeded")
-            return
+    try:
+        api_key: Optional[APIKey] = await _validate_and_ratelimit(api_key_str)
+    except HTTPException as e:
+        code = 4001 if e.status_code == 401 else 4003
+        await websocket.close(code=code, reason=e.detail)
+        return
+
+    if api_key is not None:
         logger.info(f"Client connected: {api_key.name} (tier={api_key.tier})")
     else:
-        if api_key_str:
-            api_key = token_manager.validate_key(api_key_str)
         logger.info("Client connected (auth disabled)")
 
     try:
@@ -621,10 +640,13 @@ async def websocket_endpoint(websocket: WebSocket):
             elif msg_type == "stop_listening":
                 is_listening = False
                 vad_endpoint = None
-                session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
-                pipeline_task = asyncio.create_task(
-                    _run_pipeline(audio_buffer, session)
-                )
+                if api_key is not None and not await token_manager.check_rate_limit(api_key):
+                    await transport.send_json({"type": "error", "message": "rate_limited"})
+                else:
+                    session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
+                    pipeline_task = asyncio.create_task(
+                        _run_pipeline(audio_buffer, session)
+                    )
                 audio_buffer = []
                 buffer_samples = 0
                 await transport.send_json({"type": "listening_stopped"})
@@ -642,10 +664,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         audio_buffer.append(audio_np)
                         is_listening = False
                         vad_endpoint = None
-                        session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
-                        pipeline_task = asyncio.create_task(
-                            _run_pipeline(audio_buffer, session)
-                        )
+                        if api_key is not None and not await token_manager.check_rate_limit(api_key):
+                            await transport.send_json({"type": "error", "message": "rate_limited"})
+                        else:
+                            session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
+                            pipeline_task = asyncio.create_task(
+                                _run_pipeline(audio_buffer, session)
+                            )
                         audio_buffer = []
                         buffer_samples = 0
                     else:
@@ -658,10 +683,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             logger.debug("VAD endpoint: speech ended, processing buffer")
                             is_listening = False
                             vad_endpoint = None
-                            session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
-                            pipeline_task = asyncio.create_task(
-                                _run_pipeline(audio_buffer, session)
-                            )
+                            if api_key is not None and not await token_manager.check_rate_limit(api_key):
+                                await transport.send_json({"type": "error", "message": "rate_limited"})
+                            else:
+                                session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
+                                pipeline_task = asyncio.create_task(
+                                    _run_pipeline(audio_buffer, session)
+                                )
                             audio_buffer = []
                             buffer_samples = 0
 
@@ -751,7 +779,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # ── WebRTC signaling ─────────────────────────────────────────────
 
 @router.post("/api/webrtc/offer")
-async def webrtc_offer(body: dict):
+async def webrtc_offer(body: dict, api_key: Optional[APIKey] = Depends(require_api_key)):
     """Accept a WebRTC SDP offer and return an SDP answer + session_id."""
     if not _webrtc_available:
         return JSONResponse(

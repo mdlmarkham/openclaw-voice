@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from fastapi import Header, HTTPException, Query
 from loguru import logger
 
 
@@ -277,6 +279,49 @@ class TokenManager:
 
 # Global token manager instance
 token_manager = TokenManager()
+
+
+async def _validate_and_ratelimit(key_str: Optional[str]) -> Optional[APIKey]:
+    """Shared validation + rate-limit path for both HTTP and WebSocket auth.
+
+    Returns the resolved APIKey (or None if auth is disabled and no key was
+    supplied). Raises HTTPException(401/429) when auth is required — callers
+    that aren't plain HTTP (e.g. WebSocket handshakes) should catch it and
+    translate to an appropriate close code.
+    """
+    from .config import settings  # local import avoids a config<->auth import cycle
+
+    if not settings.require_auth:
+        if not key_str:
+            return None
+        # Auth disabled but a key was supplied anyway — validate it so usage
+        # can still be attributed/billed, but never reject the request for it.
+        return token_manager.validate_key(key_str)
+
+    if not key_str:
+        raise HTTPException(status_code=401, detail="API key required")
+
+    api_key = token_manager.validate_key(key_str)
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if not await token_manager.check_rate_limit(api_key):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    return api_key
+
+
+async def require_api_key(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(default=None),
+) -> Optional[APIKey]:
+    """FastAPI dependency: auth + per-request rate limiting for REST routes.
+
+    Shared by /api/speak, /api/chat, /api/chat/json, /api/voices (GET+POST),
+    and /api/webrtc/offer. When OPENCLAW_REQUIRE_AUTH=false (default), this
+    is a no-op unless a key is explicitly supplied.
+    """
+    return await _validate_and_ratelimit(x_api_key or api_key)
 
 
 # Helper to load keys from environment and persisted database

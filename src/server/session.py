@@ -14,3 +14,4 @@ class SessionContext:
     agent_id: Optional[str] = None
     voice_id: Optional[str] = None
     reconnect: bool = False
+    session_id: Optional[str] = None

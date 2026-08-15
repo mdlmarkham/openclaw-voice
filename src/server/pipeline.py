@@ -88,6 +88,7 @@ class VoicePipeline:
                 model=agent_model,
                 agent_hint=session.agent_id,
                 reconnect=session.reconnect,
+                session_id=session.session_id or "default",
             ):
                 full_response += chunk
                 sentence_buffer += chunk

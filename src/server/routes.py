@@ -447,7 +447,7 @@ async def chat(
     try:
         # Get LLM response (using session backend for continuity)
         response_text = ""
-        async for chunk in backend.chat_stream(text, agent_hint=agent):
+        async for chunk in backend.chat_stream(text, agent_hint=agent, session_id=sid):
             response_text += chunk
 
         if not response_text.strip():
@@ -532,7 +532,7 @@ async def chat_json(
     try:
         # Get LLM response
         response_text = ""
-        async for chunk in backend.chat_stream(text, agent_hint=agent):
+        async for chunk in backend.chat_stream(text, agent_hint=agent, session_id=sid):
             response_text += chunk
 
         if not response_text.strip():
@@ -607,7 +607,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
     transport = WebSocketTransport(websocket)
     client_id = f"{websocket.client.host}:{websocket.client.port}"
-    logger.info(f"WebSocket connected from {client_id}")
+    ws_session_id = secrets.token_hex(8)
+    logger.info(f"WebSocket connected from {client_id} (session={ws_session_id})")
 
     # Server-side WebSocket ping to keep connection alive on mobile networks.
     # Carrier NAT drops idle TCP after 30-60s. Client pings every 15s,
@@ -712,6 +713,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         agent_id=session_agent,
                         reconnect=session_reconnected,
                         voice_id=session_voice_override,
+                        session_id=ws_session_id,
                     )
                     pipeline_task = asyncio.create_task(_run_pipeline(audio_buffer, session))
                 audio_buffer = []
@@ -740,6 +742,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 agent_id=session_agent,
                                 reconnect=session_reconnected,
                                 voice_id=session_voice_override,
+                                session_id=ws_session_id,
                             )
                             pipeline_task = asyncio.create_task(
                                 _run_pipeline(audio_buffer, session)
@@ -767,6 +770,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     agent_id=session_agent,
                                     reconnect=session_reconnected,
                                     voice_id=session_voice_override,
+                                    session_id=ws_session_id,
                                 )
                                 pipeline_task = asyncio.create_task(
                                     _run_pipeline(audio_buffer, session)
@@ -849,8 +853,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "clear_history":
                 if app_state.backend is not None:
-                    app_state.backend.clear_history()
-                logger.info(f"History cleared for {client_id}")
+                    app_state.backend.clear_history(session_id=ws_session_id)
+                logger.info(f"History cleared for {client_id} (session={ws_session_id})")
                 await transport.send_json({"type": "history_cleared"})
 
     except Exception as e:
@@ -969,6 +973,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                     agent_id=session_agent,
                     reconnect=session_reconnected,
                     voice_id=session_voice_override,
+                    session_id=session_id,
                 )
                 if app_state.pipeline is not None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
@@ -996,6 +1001,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                         agent_id=session_agent,
                         reconnect=session_reconnected,
                         voice_id=session_voice_override,
+                        session_id=session_id,
                     )
                     if app_state.pipeline is not None:
                         async for event in app_state.pipeline.process_audio(audio_buffer, session):
@@ -1012,6 +1018,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                     agent_id=session_agent,
                     reconnect=session_reconnected,
                     voice_id=session_voice_override,
+                    session_id=session_id,
                 )
                 if app_state.pipeline is not None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
@@ -1036,7 +1043,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
 
             elif msg_type == "clear_history":
                 if app_state.backend is not None:
-                    app_state.backend.clear_history()
+                    app_state.backend.clear_history(session_id=session_id)
                 await transport.send_json({"type": "history_cleared"})
 
     except Exception as e:

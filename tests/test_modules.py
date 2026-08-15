@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.server.stt import WhisperSTT
 from src.server.tts import ChatterboxTTS, TTSRouter, TTSCache
 from src.server.backend import AIBackend
+from src.server.session import SessionContext
 from src.server.vad import VoiceActivityDetector
 
 
@@ -158,11 +159,26 @@ class TestAIBackend:
         assert "wisdom companion" in backend.system_prompt.lower()
 
     def test_clear_history(self):
-        """Test conversation history can be cleared."""
+        """Test conversation history can be cleared (all sessions)."""
         backend = AIBackend()
-        backend.conversation_history = [{"role": "user", "content": "test"}]
+        backend._session_histories["s1"] = [{"role": "user", "content": "test"}]
+        backend._session_last_used["s1"] = time.monotonic()
         backend.clear_history()
-        assert len(backend.conversation_history) == 0
+        assert len(backend._session_histories) == 0
+        assert len(backend._session_last_used) == 0
+
+    def test_clear_history_scoped_to_session(self):
+        """clear_history(session_id=...) must clear only that session's
+        history, not other sessions' (#24)."""
+        backend = AIBackend()
+        backend._session_histories["s1"] = [{"role": "user", "content": "hello"}]
+        backend._session_histories["s2"] = [{"role": "user", "content": "world"}]
+        backend._session_last_used["s1"] = time.monotonic()
+        backend._session_last_used["s2"] = time.monotonic()
+        backend.clear_history(session_id="s1")
+        assert "s1" not in backend._session_histories
+        assert "s2" in backend._session_histories
+        assert backend._session_histories["s2"][0]["content"] == "world"
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
@@ -176,6 +192,135 @@ class TestAIBackend:
         result = await backend.chat("Say 'test' and nothing else.")
         assert isinstance(result, str)
         assert len(result) > 0
+
+
+class TestAIBackendSessionIsolation:
+    """Tests for issue #24: per-session chat history isolation.
+
+    Direct-OpenAI mode keys conversation_history by session_id (dict of lists)
+    so concurrent WS/WebRTC sessions don't interleave each other's context.
+    In gateway mode, session_id is passed through (gateway manages memory).
+    """
+
+    def _make_echo_backend(self):
+        """Return an AIBackend with no real OpenAI client — uses the echo
+        fallback path, which lets us inspect _build_messages' history wiring
+        without making network calls."""
+        return AIBackend(backend_type="echo")
+
+    @pytest.mark.asyncio
+    async def test_two_sessions_have_isolated_histories(self):
+        """Two sessions writing to the same backend instance must have
+        separate conversation histories — session A's messages never appear
+        in session B's _build_messages output."""
+        backend = self._make_echo_backend()
+
+        # Session A sends a message
+        await backend._build_messages("hello from A", session_id="sessA")
+        # Session B sends a message
+        await backend._build_messages("hello from B", session_id="sessB")
+        # Session A sends another message
+        msgs_a, _ = await backend._build_messages("follow-up A", session_id="sessA")
+
+        # Session A's messages contain only A's messages, not B's
+        user_msgs = [m["content"] for m in msgs_a if m["role"] == "user"]
+        assert "hello from A" in user_msgs
+        assert "follow-up A" in user_msgs
+        assert "hello from B" not in user_msgs
+
+        # Session B's history contains only B's message
+        msgs_b, _ = await backend._build_messages("follow-up B", session_id="sessB")
+        user_msgs_b = [m["content"] for m in msgs_b if m["role"] == "user"]
+        assert "hello from B" in user_msgs_b
+        assert "follow-up B" in user_msgs_b
+        assert "hello from A" not in user_msgs_b
+        assert "follow-up A" not in user_msgs_b
+
+    @pytest.mark.asyncio
+    async def test_default_session_does_not_leak_into_named_sessions(self):
+        """When no session_id is given (defaults to 'default'), messages
+        must not appear in a named session's history."""
+        backend = self._make_echo_backend()
+        await backend._build_messages("default message")
+        msgs, _ = await backend._build_messages("named message", session_id="named")
+        user_msgs = [m["content"] for m in msgs if m["role"] == "user"]
+        assert "default message" not in user_msgs
+        assert "named message" in user_msgs
+
+    @pytest.mark.asyncio
+    async def test_record_assistant_response_isolated(self):
+        """Assistant responses are recorded to the correct session's history."""
+        backend = self._make_echo_backend()
+        await backend._build_messages("user A", session_id="sessA")
+        await backend._record_assistant_response("assistant A reply", session_id="sessA")
+
+        await backend._build_messages("user B", session_id="sessB")
+        await backend._record_assistant_response("assistant B reply", session_id="sessB")
+
+        hist_a = backend._session_histories["sessA"]
+        hist_b = backend._session_histories["sessB"]
+        assert any(m["content"] == "assistant A reply" for m in hist_a)
+        assert not any(m["content"] == "assistant A reply" for m in hist_b)
+        assert any(m["content"] == "assistant B reply" for m in hist_b)
+
+    @pytest.mark.asyncio
+    async def test_clear_history_scoped_to_session(self):
+        """clear_history(session_id=X) clears only session X, leaving others intact."""
+        backend = self._make_echo_backend()
+        await backend._build_messages("msg A", session_id="sessA")
+        await backend._build_messages("msg B", session_id="sessB")
+
+        backend.clear_history(session_id="sessA")
+        assert "sessA" not in backend._session_histories
+        assert "sessB" in backend._session_histories
+
+    @pytest.mark.asyncio
+    async def test_clear_history_all_clears_everything(self):
+        """clear_history() with no session_id clears all sessions."""
+        backend = self._make_echo_backend()
+        await backend._build_messages("msg A", session_id="sessA")
+        await backend._build_messages("msg B", session_id="sessB")
+
+        backend.clear_history()
+        assert len(backend._session_histories) == 0
+
+    @pytest.mark.asyncio
+    async def test_history_capped_at_last_10_turns(self):
+        """Per-session history is capped at the last 10 turns (existing
+        behavior, now per-session)."""
+        backend = self._make_echo_backend()
+        for i in range(15):
+            await backend._build_messages(f"msg {i}", session_id="sess")
+        msgs, _ = await backend._build_messages("latest", session_id="sess")
+        user_msgs = [m for m in msgs if m["role"] == "user"]
+        # 10 most recent + system prompt → at most 10 user messages
+        assert len(user_msgs) <= 10
+        assert user_msgs[-1]["content"] == "latest"
+        assert user_msgs[0]["content"] != "msg 0"  # oldest evicted
+
+    @pytest.mark.asyncio
+    async def test_gateway_mode_session_id_accepted_but_not_stored(self):
+        """In openclaw gateway mode, session_id is accepted by chat_stream
+        but no server-side history is accumulated (gateway manages memory)."""
+        backend = AIBackend(
+            backend_type="openclaw",
+            url="https://fake-gateway.example/v1",
+            api_key="fake",
+            system_prompt="",
+        )
+        # _build_messages returns immediately for gateway mode (no history)
+        msgs, is_openclaw = await backend._build_messages("hello", session_id="sessX")
+        assert is_openclaw is True
+        assert "sessX" not in backend._session_histories
+        # Only system + user message, no accumulated history
+        assert len(msgs) == 2
+
+    def test_session_context_has_session_id_field(self):
+        """SessionContext must have a session_id field (issue #24 acceptance)."""
+        ctx = SessionContext(session_id="abc123")
+        assert ctx.session_id == "abc123"
+        ctx_default = SessionContext()
+        assert ctx_default.session_id is None
 
 
 class TestVAD:

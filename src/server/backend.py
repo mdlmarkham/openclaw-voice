@@ -12,6 +12,7 @@ cross-session interleaving.
 """
 
 import asyncio
+import time
 from typing import Optional, List, Dict, AsyncGenerator
 
 from loguru import logger
@@ -121,6 +122,8 @@ FULL_SYSTEM_PROMPT = (
 class AIBackend:
     """AI backend for processing user messages."""
 
+    _SESSION_HISTORY_TTL = 3600  # Sessions expire after 1 hour of inactivity
+
     def __init__(
         self,
         backend_type: str = "openai",
@@ -134,7 +137,8 @@ class AIBackend:
         self.model = model
         self.api_key = api_key
         self.system_prompt = system_prompt or FULL_SYSTEM_PROMPT
-        self.conversation_history: List[Dict] = []
+        self._session_histories: Dict[str, List[Dict]] = {}
+        self._session_last_used: Dict[str, float] = {}
         self._history_lock = asyncio.Lock()
         self._client = None
         self._setup_client()
@@ -176,7 +180,25 @@ class AIBackend:
         else:
             logger.warning(f"Unknown backend type: {self.backend_type}")
 
-    async def chat(self, user_message: str, model: str = None) -> str:
+    async def _get_session_history(self, session_id: str) -> List[Dict]:
+        """Get (or create) the conversation history for a session.
+
+        Also opportunistically evicts histories that have been idle longer
+        than _SESSION_HISTORY_TTL. Must be called under _history_lock.
+        """
+        now = time.monotonic()
+        self._session_last_used[session_id] = now
+        stale = [
+            sid
+            for sid, ts in self._session_last_used.items()
+            if now - ts > self._SESSION_HISTORY_TTL
+        ]
+        for sid in stale:
+            self._session_histories.pop(sid, None)
+            self._session_last_used.pop(sid, None)
+        return self._session_histories.setdefault(session_id, [])
+
+    async def chat(self, user_message: str, model: str = None, session_id: str = "default") -> str:
         """
         Send a message and get a response.
 
@@ -189,7 +211,7 @@ class AIBackend:
         """
         use_model = model or self.model
         if (self.backend_type in ("openai", "openclaw")) and self._client:
-            return await self._chat_openai(user_message, model=use_model)
+            return await self._chat_openai(user_message, model=use_model, session_id=session_id)
         else:
             # Fallback echo response
             return f"I heard you say: {user_message}"
@@ -200,6 +222,7 @@ class AIBackend:
         model: str = None,
         agent_hint: Optional[str] = None,
         reconnect: bool = False,
+        session_id: str = "default",
     ) -> AsyncGenerator[str, None]:
         """
         Stream a response, yielding chunks as they arrive.
@@ -209,6 +232,9 @@ class AIBackend:
             model: Override model/agent for this request
             agent_hint: Per-request agent ID for voice hint selection
             reconnect: If True, send context resumption message for gateway
+            session_id: Per-session ID for conversation history isolation.
+                In gateway mode this is accepted but not used server-side
+                (the gateway manages its own memory).
 
         Yields:
             Text chunks as they're generated
@@ -216,7 +242,11 @@ class AIBackend:
         use_model = model or self.model
         if (self.backend_type in ("openai", "openclaw")) and self._client:
             async for chunk in self._chat_openai_stream(
-                user_message, model=use_model, agent_hint=agent_hint, reconnect=reconnect
+                user_message,
+                model=use_model,
+                agent_hint=agent_hint,
+                reconnect=reconnect,
+                session_id=session_id,
             ):
                 yield chunk
         else:
@@ -227,6 +257,7 @@ class AIBackend:
         user_message: str,
         agent_hint: Optional[str] = None,
         reconnect: bool = False,
+        session_id: str = "default",
     ) -> tuple[list[dict], bool]:
         """Build the messages list for an OpenAI API call.
 
@@ -239,40 +270,46 @@ class AIBackend:
             voice_hint = cfg.get("hint", DEFAULT_VOICE_HINT)
             messages: list[dict] = [{"role": "system", "content": voice_hint}]
             if reconnect:
-                messages.append({
-                    "role": "system",
-                    "content": "The user has reconnected after a brief disconnection. "
-                               "Continue the conversation naturally from where you left off. "
-                               "Do not acknowledge the reconnection unless asked."
-                })
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": "The user has reconnected after a brief disconnection. "
+                        "Continue the conversation naturally from where you left off. "
+                        "Do not acknowledge the reconnection unless asked.",
+                    }
+                )
             messages.append({"role": "user", "content": user_message})
             return messages, is_openclaw
 
         async with self._history_lock:
-            self.conversation_history.append(
+            history = await self._get_session_history(session_id)
+            history.append(
                 {
                     "role": "user",
                     "content": user_message,
                 }
             )
             messages = [{"role": "system", "content": self.system_prompt}]
-            messages.extend(self.conversation_history[-10:])
+            messages.extend(history[-10:])
             return messages, is_openclaw
 
-    async def _record_assistant_response(self, text: str) -> None:
+    async def _record_assistant_response(self, text: str, session_id: str = "default") -> None:
         """Append assistant response to conversation history (direct mode only)."""
         if self.backend_type != "openclaw":
             async with self._history_lock:
-                self.conversation_history.append(
+                history = await self._get_session_history(session_id)
+                history.append(
                     {
                         "role": "assistant",
                         "content": text,
                     }
                 )
 
-    async def _chat_openai(self, user_message: str, model: str = None) -> str:
+    async def _chat_openai(
+        self, user_message: str, model: str = None, session_id: str = "default"
+    ) -> str:
         """Chat via OpenAI-compatible API."""
-        messages, _ = await self._build_messages(user_message)
+        messages, _ = await self._build_messages(user_message, session_id=session_id)
 
         try:
             response = await self._client.chat.completions.create(
@@ -282,7 +319,7 @@ class AIBackend:
                 temperature=0.7,
             )
             assistant_message = response.choices[0].message.content
-            await self._record_assistant_response(assistant_message)
+            await self._record_assistant_response(assistant_message, session_id=session_id)
             return assistant_message
 
         except Exception as e:
@@ -295,9 +332,12 @@ class AIBackend:
         model: str = None,
         agent_hint: Optional[str] = None,
         reconnect: bool = False,
+        session_id: str = "default",
     ) -> AsyncGenerator[str, None]:
         """Stream chat via OpenAI-compatible API."""
-        messages, _ = await self._build_messages(user_message, agent_hint=agent_hint, reconnect=reconnect)
+        messages, _ = await self._build_messages(
+            user_message, agent_hint=agent_hint, reconnect=reconnect, session_id=session_id
+        )
 
         full_response = ""
 
@@ -316,25 +356,31 @@ class AIBackend:
                     full_response += text
                     yield text
 
-            await self._record_assistant_response(full_response)
+            await self._record_assistant_response(full_response, session_id=session_id)
 
         except Exception as e:
             logger.error(f"OpenAI streaming error: {e}")
             yield "Sorry, I had trouble processing that."
 
-    def clear_history(self):
+    def clear_history(self, session_id: Optional[str] = None):
         """Clear conversation history.
 
         For OpenClaw gateway mode, this is a no-op since the gateway
         manages its own conversation memory. Clearing server-side history
         would have no effect on cross-channel continuity.
 
-        For direct OpenAI mode, this clears the in-memory history.
+        For direct OpenAI mode, clears the in-memory history for the given
+        session_id. If session_id is None, clears all sessions' histories.
         """
         if self.backend_type == "openclaw":
             logger.info("Clear history requested (OpenClaw mode — gateway manages memory, no-op)")
             # Gateway owns the conversation. We don't clear server-side
             # because we never accumulate it in OpenClaw mode.
+        elif session_id is not None:
+            self._session_histories.pop(session_id, None)
+            self._session_last_used.pop(session_id, None)
+            logger.info(f"Conversation history cleared for session {session_id}")
         else:
-            self.conversation_history = []
-            logger.info("Conversation history cleared (direct OpenAI mode)")
+            self._session_histories.clear()
+            self._session_last_used.clear()
+            logger.info("All conversation histories cleared (direct OpenAI mode)")

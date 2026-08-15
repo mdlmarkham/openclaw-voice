@@ -6,6 +6,9 @@ import pytest
 import numpy as np
 import os
 import sys
+import asyncio
+import threading
+import time
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -239,6 +242,117 @@ class TestTTSRouter:
         assert router.active_backend == "supertonic"
 
 
+class TestTTSVoiceConcurrency:
+    """Regression tests for issue #10: per-call voice must not race across
+    concurrent sessions sharing one ChatterboxTTS/TTSRouter instance.
+
+    The bug: voice/style was mutable instance state on a single shared
+    ChatterboxTTS, mutated under a lock in start_listening and then read
+    unlocked during executor-run synthesis — so session A's sentence could
+    be spoken in session B's voice. The fix threads voice as an explicit
+    per-call parameter and resolves the style locally (read-only cache),
+    never mutating shared instance state after init.
+    """
+
+    def _make_fake_supertonic(self, monkeypatch):
+        """Return (ChatterboxTTS forced to a fake supertonic backend, calls list).
+
+        The fake's synthesize() records (text, voice_style, timing) and blocks
+        on a barrier so two concurrent calls deterministically overlap inside
+        the executor — the exact precondition for the original race.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.setattr(ChatterboxTTS, "_load_model", lambda self: None)
+        sup = ChatterboxTTS(executor=ThreadPoolExecutor(max_workers=4))
+        sup._backend = "supertonic"
+        sup._supertonic_sr = 24000  # skip resample path
+        sup._supertonic_voice = "F2"
+        # Sentinel: if synthesis ever reads this shared attr it gets "POLLUTED".
+        sup._supertonic_style = "POLLUTED"
+        sup._voice_style_cache = {}
+
+        calls = []
+        barrier = threading.Barrier(2, timeout=10)
+
+        class FakeSupertonic:
+            voice_style_names = ["F2", "M2", "M4", "F4", "M1", "F5"]
+
+            def get_voice_style(self, name):
+                return f"style:{name}"
+
+            def synthesize(self, text, voice_style=None):
+                rec = {"text": text, "style": voice_style, "start": time.monotonic()}
+                calls.append(rec)
+                # Block until both concurrent calls are inside synthesize(),
+                # guaranteeing overlapping executor windows.
+                barrier.wait()
+                rec["end"] = time.monotonic()
+                return (np.zeros((1, 2400), dtype=np.float32),)
+
+        sup._supertonic_tts = FakeSupertonic()
+        return sup, calls
+
+    @pytest.mark.asyncio
+    async def test_concurrent_sessions_no_voice_cross_contamination(self, monkeypatch):
+        """Two concurrent router calls (agents atlas=M2, mara=F5) against one
+        shared instance must each use their own voice — never the shared
+        _supertonic_style sentinel, regardless of overlapping execution."""
+        sup, calls = self._make_fake_supertonic(monkeypatch)
+        router = TTSRouter(supertonic=sup, higgs=None, backend="supertonic", cache=TTSCache())
+
+        async def run(text, agent_hint):
+            async for _ in router.synthesize_stream(text, agent_hint=agent_hint):
+                pass
+
+        await asyncio.gather(
+            run("atlas sentence", "atlas"),
+            run("mara sentence", "mara"),
+        )
+
+        by_text = {c["text"]: c for c in calls}
+        assert by_text["atlas sentence"]["style"] == "style:M2"
+        assert by_text["mara sentence"]["style"] == "style:F5"
+        # Neither call picked up the shared _supertonic_style sentinel.
+        assert all(c["style"] != "POLLUTED" for c in calls)
+        # The Barrier(parties=2) not raising BrokenBarrierError proves both
+        # calls were inside synthesize() simultaneously — the exact
+        # precondition for the original race. (Timestamp-based overlap
+        # assertions are flaky on Windows due to ~15ms clock resolution.)
+
+    @pytest.mark.asyncio
+    async def test_router_supertonic_honors_agent_hint(self, monkeypatch):
+        """TTSRouter's Supertonic path must forward agent_hint → supertonic_voice
+        (previously dropped at the Supertonic fallback)."""
+        sup, calls = self._make_fake_supertonic(monkeypatch)
+        # Single call — relax the barrier so it doesn't block waiting for a peer.
+        sup._supertonic_tts.synthesize = lambda text, voice_style=None: (
+            calls.append({"text": text, "style": voice_style})
+            or (np.zeros((1, 2400), dtype=np.float32),),
+        )
+        router = TTSRouter(supertonic=sup, higgs=None, backend="supertonic", cache=TTSCache())
+
+        async for _ in router.synthesize_stream("hi", agent_hint="atlas"):
+            pass
+
+        assert calls[-1]["style"] == "style:M2"
+
+    @pytest.mark.asyncio
+    async def test_router_explicit_voice_overrides_agent_hint(self, monkeypatch):
+        """An explicit per-call voice must win over the agent_hint-derived voice."""
+        sup, calls = self._make_fake_supertonic(monkeypatch)
+        sup._supertonic_tts.synthesize = lambda text, voice_style=None: (
+            calls.append({"text": text, "style": voice_style})
+            or (np.zeros((1, 2400), dtype=np.float32),),
+        )
+        router = TTSRouter(supertonic=sup, higgs=None, backend="supertonic", cache=TTSCache())
+
+        async for _ in router.synthesize_stream("hi", voice="F5", agent_hint="atlas"):
+            pass
+
+        assert calls[-1]["style"] == "style:F5"
+
+
 class TestTTSUtils:
     """Tests for TTS text sanitization (#15)."""
 
@@ -259,6 +373,7 @@ class TestTTSUtils:
 
     def test_sanitize_preserves_clean_text(self):
         from src.server.text_utils import sanitize_tts_symbols
+
         text = "Hello world"
         assert sanitize_tts_symbols(text) == "Hello world"
 

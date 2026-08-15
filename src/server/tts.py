@@ -47,9 +47,7 @@ class ChatterboxTTS:
         self.voice_sample = voice_sample
         self.device = device
         self.voice_id = (
-            voice_id
-            or os.environ.get("ELEVENLABS_VOICE_ID")
-            or "cgSgspJ2msm6clMCkdW9"  # Jessica
+            voice_id or os.environ.get("ELEVENLABS_VOICE_ID") or "cgSgspJ2msm6clMCkdW9"  # Jessica
         )
         self._edge_voice = os.environ.get("EDGE_TTS_VOICE", "en-US-JennyNeural")
         self._supertonic_voice = os.environ.get("SUPERTONIC_VOICE", "F2")
@@ -61,6 +59,7 @@ class ChatterboxTTS:
         self._supertonic_tts = None
         self._supertonic_style = None
         self._supertonic_sr = 44100  # Supertonic outputs at 44100Hz
+        self._voice_style_cache: dict[str, object] = {}
         self._load_model()
 
     def _load_model(self):
@@ -104,6 +103,7 @@ class ChatterboxTTS:
             logger.info(
                 f"✅ Supertonic TTS ready (model={self._supertonic_model}, voice={self._supertonic_voice}, sr={self._supertonic_sr}Hz)"
             )
+            self._prewarm_voice_style_cache()
             return
         except ImportError:
             logger.debug("supertonic not installed, skipping")
@@ -210,7 +210,9 @@ class ChatterboxTTS:
         else:
             return np.zeros(12000, dtype=np.float32)
 
-    async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
+    async def synthesize_stream(
+        self, text: str, voice: Optional[str] = None
+    ) -> AsyncGenerator[bytes, None]:
         """
         Stream synthesized audio chunks.
 
@@ -218,7 +220,7 @@ class ChatterboxTTS:
             Raw PCM audio chunks (int16 at native sample rate)
         """
         try:
-            async for chunk in self._synthesize_stream_primary(text):
+            async for chunk in self._synthesize_stream_primary(text, voice=voice):
                 yield chunk
         except Exception as e:
             logger.error(f"Primary TTS ({self._backend}) failed: {e}")
@@ -242,7 +244,9 @@ class ChatterboxTTS:
             return _EdgeFallback(self._edge_voice)
         return None
 
-    async def _synthesize_stream_primary(self, text: str) -> AsyncGenerator[bytes, None]:
+    async def _synthesize_stream_primary(
+        self, text: str, voice: Optional[str] = None
+    ) -> AsyncGenerator[bytes, None]:
         """Primary TTS streaming (before fallback)."""
         if self._backend == "elevenlabs":
             try:
@@ -282,7 +286,7 @@ class ChatterboxTTS:
             try:
                 loop = asyncio.get_event_loop()
                 audio_float32 = await loop.run_in_executor(
-                    self._executor, self._synthesize_supertonic_sync, text
+                    self._executor, self._synthesize_supertonic_sync, text, voice
                 )
                 if audio_float32 is not None and len(audio_float32) > 0:
                     audio_int16 = float32_to_int16(audio_float32)
@@ -310,10 +314,11 @@ class ChatterboxTTS:
             except Exception as e:
                 logger.error(f"TTS fallback error: {e}")
 
-    def _synthesize_supertonic_sync(self, text: str) -> np.ndarray:
+    def _synthesize_supertonic_sync(self, text: str, voice: Optional[str] = None) -> np.ndarray:
         """Synchronous Supertonic synthesis (runs in executor)."""
         try:
-            result = self._supertonic_tts.synthesize(text, voice_style=self._supertonic_style)
+            style = self._resolve_voice_style(voice)
+            result = self._supertonic_tts.synthesize(text, voice_style=style)
             audio = result[0].squeeze()  # shape (1, N) → (N,)
             # Resample from 44100Hz to 24000Hz for client compatibility
             # Use soxr (0.002s) instead of librosa (4.8s) — 2500x faster
@@ -331,17 +336,58 @@ class ChatterboxTTS:
         """Decode MP3/WAV bytes and resample to target_sr. Runs in executor."""
         import io
         import soundfile as sf
+
         buf = io.BytesIO(raw_bytes)
         data, sr = sf.read(buf)
         if sr != target_sr:
             import soxr
+
             data = soxr.resample(data, sr, target_sr)
         return data.astype(np.float32)
 
-    async def _synthesize_supertonic(self, text: str) -> np.ndarray:
+    def _resolve_voice_style(self, voice: Optional[str]):
+        """Read-only cache keyed by voice name — never mutates shared instance state."""
+        name = voice or self._supertonic_voice
+        cached = self._voice_style_cache.get(name)
+        if cached is not None:
+            return cached
+        # Lazy load style
+        if self._supertonic_tts is None:
+            return self._supertonic_style
+        try:
+            if name in getattr(self._supertonic_tts, "voice_style_names", []):
+                style = self._supertonic_tts.get_voice_style(name)
+            else:
+                style = self._supertonic_style
+        except Exception:
+            style = self._supertonic_style
+        self._voice_style_cache[name] = style
+        return style
+
+    def _prewarm_voice_style_cache(self) -> None:
+        """Populate the voice-style cache for all known agent voices at startup
+        so steady-state synthesis reads the cache without executor-thread writes."""
+        if self._supertonic_tts is None:
+            return
+        names = set(self.AGENT_VOICE_MAP.values())
+        names.add(self._supertonic_voice)
+        for name in names:
+            if name in self._voice_style_cache:
+                continue
+            try:
+                if name in getattr(self._supertonic_tts, "voice_style_names", []):
+                    self._voice_style_cache[name] = self._supertonic_tts.get_voice_style(name)
+                else:
+                    self._voice_style_cache[name] = self._supertonic_style
+            except Exception:
+                self._voice_style_cache[name] = self._supertonic_style
+
+    async def _synthesize_supertonic(self, text: str, voice: Optional[str] = None) -> np.ndarray:
         """Supertonic synthesis via executor."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(self._executor, self._synthesize_supertonic_sync, text)
+        return await loop.run_in_executor(
+            self._executor, self._synthesize_supertonic_sync, text, voice
+        )
 
     async def _synthesize_edge(self, text: str) -> np.ndarray:
         """Edge TTS — fully async, collect MP3 chunks and decode."""
@@ -357,7 +403,9 @@ class ChatterboxTTS:
                     audio_buffer.write(chunk["data"])
             raw_bytes = audio_buffer.getvalue()
             loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(self._executor, self._decode_and_resample, raw_bytes, 24000)
+            data = await loop.run_in_executor(
+                self._executor, self._decode_and_resample, raw_bytes, 24000
+            )
             return data
         except Exception as e:
             logger.error(f"Edge TTS error: {e}")
@@ -377,7 +425,9 @@ class ChatterboxTTS:
         """ElevenLabs synthesis."""
         try:
             loop = asyncio.get_event_loop()
-            audio_bytes = await loop.run_in_executor(self._executor, self._drain_elevenlabs_sync, text)
+            audio_bytes = await loop.run_in_executor(
+                self._executor, self._drain_elevenlabs_sync, text
+            )
             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
             return audio_array.astype(np.float32) / 32768.0
         except Exception as e:
@@ -426,9 +476,12 @@ class _EdgeFallback:
             raw_bytes = audio_buffer.getvalue()
             # Decode/resample off the event loop
             import asyncio
+
             loop = asyncio.get_event_loop()
             # Use default executor
-            data = await loop.run_in_executor(None, ChatterboxTTS._decode_and_resample, raw_bytes, 24000)
+            data = await loop.run_in_executor(
+                None, ChatterboxTTS._decode_and_resample, raw_bytes, 24000
+            )
             audio_int16 = float32_to_int16(data)
             yield audio_int16.tobytes()
         except Exception as e:
@@ -531,7 +584,17 @@ class TTSRouter:
                 yield chunk
         elif self._supertonic:
             clean = _strip_control_tokens(text)
-            async for chunk in self._supertonic.synthesize_stream(clean):
+            supertonic_voice = voice
+            if not supertonic_voice and agent_hint:
+                try:
+                    from .backend import AGENT_VOICE_CONFIG
+
+                    supertonic_voice = AGENT_VOICE_CONFIG.get(agent_hint, {}).get(
+                        "supertonic_voice"
+                    )
+                except ImportError:
+                    pass
+            async for chunk in self._supertonic.synthesize_stream(clean, voice=supertonic_voice):
                 chunks.append(chunk)
                 yield chunk
 

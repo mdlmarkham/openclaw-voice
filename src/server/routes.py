@@ -26,7 +26,6 @@ from .session import SessionContext
 from . import state as app_state
 from .text_utils import sanitize_tts_symbols
 from .transport import WebSocketTransport
-from .tts import ChatterboxTTS
 from .vad import VADEndpoint
 
 # ── REST API session store ──────────────────────────────────────────
@@ -38,26 +37,26 @@ _FRESH_WINDOW = 300  # Reuse sessions used within 5 minutes
 
 def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
     """Get or create a backend session for the REST API.
-    
+
     If no session_id is provided, automatically reuses the most recent
     session for the same agent if it was used within the fresh window.
     This gives iOS Shortcuts conversation continuity without managing IDs.
     """
     import asyncio
     from .backend import AIBackend
-    
+
     # Clean expired sessions
     now = time.time()
     expired = [sid for sid, s in _chat_sessions.items() if now - s["last_used"] > _SESSION_TTL]
     for sid in expired:
         del _chat_sessions[sid]
-    
+
     # Explicit session_id — use it
     if session_id and session_id in _chat_sessions:
         session = _chat_sessions[session_id]
         session["last_used"] = now
         return session["backend"], session_id
-    
+
     # No session_id — find the freshest session for this agent
     if not session_id:
         freshest = None
@@ -66,19 +65,19 @@ def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
             if s["agent"] == agent and s["last_used"] > freshest_time:
                 freshest = sid
                 freshest_time = s["last_used"]
-        
+
         if freshest and (now - freshest_time) < _FRESH_WINDOW:
             session = _chat_sessions[freshest]
             session["last_used"] = now
             return session["backend"], freshest
-    
+
     # Create new session
     new_id = session_id or f"rest_{secrets.token_hex(8)}"
     # Use the same gateway config as the main backend
     gateway_url = settings.openclaw_gateway_url or os.getenv("OPENCLAW_GATEWAY_URL")
     gateway_token = settings.openclaw_gateway_token or os.getenv("OPENCLAW_GATEWAY_TOKEN")
     openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-    
+
     if gateway_url and gateway_token:
         # OpenClaw gateway mode
         voice_model = settings.voice_model or app_state.backend.model if app_state.backend else None
@@ -104,14 +103,15 @@ def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
     _chat_sessions[new_id] = {"backend": backend, "agent": agent, "last_used": now}
     return backend, new_id
 
-_tts_lock = asyncio.Lock()
 
 WAV_MAGIC_RIFF = b"RIFF"
 WAV_MAGIC_WAVE = b"WAVE"
 
+
 def _is_valid_wav(data: bytes) -> bool:
     """Cheap magic-byte check: RIFF....WAVE header."""
     return len(data) >= 12 and data[0:4] == WAV_MAGIC_RIFF and data[8:12] == WAV_MAGIC_WAVE
+
 
 try:
     from .webrtc import WebRTCTransport, register_session, remove_session
@@ -140,7 +140,9 @@ async def index():
 @router.get("/voice/shortcut")
 async def shortcut_setup():
     """Serve the iOS Shortcut setup page."""
-    response = FileResponse(Path(__file__).resolve().parent.parent / "client" / "shortcut-setup.html")
+    response = FileResponse(
+        Path(__file__).resolve().parent.parent / "client" / "shortcut-setup.html"
+    )
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
 
@@ -158,6 +160,7 @@ async def health():
     # RSS memory
     try:
         import psutil
+
         rss_mb = round(psutil.Process().memory_info().rss / 1024 / 1024, 1)
     except Exception:
         rss_mb = None
@@ -170,7 +173,9 @@ async def health():
     return JSONResponse(
         {
             "status": "ok",
-            "uptime_seconds": round(time.time() - app_state._startup_time, 1) if app_state._startup_time else 0,
+            "uptime_seconds": round(time.time() - app_state._startup_time, 1)
+            if app_state._startup_time
+            else 0,
             "memory": memory_info,
             "stt": app_state.stt.status() if app_state.stt else {"backend": "not_loaded"},
             "tts": app_state.tts.status() if app_state.tts else {"backend": "not_loaded"},
@@ -178,7 +183,8 @@ async def health():
             "auth": {
                 "enabled": settings.require_auth,
                 "warning": "Authentication is DISABLED — /api/keys and WebSocket access are open. Set OPENCLAW_REQUIRE_AUTH=true in production."
-                    if not settings.require_auth else None,
+                if not settings.require_auth
+                else None,
             },
             "backend": app_state.backend.backend_type if app_state.backend else "not_loaded",
             "vad": "loaded" if app_state.vad else "not_loaded",
@@ -199,6 +205,7 @@ async def metrics():
         return JSONResponse(status_code=404, content={"error": "metrics disabled"})
     try:
         import psutil
+
         rss_bytes = psutil.Process().memory_info().rss
     except Exception:
         rss_bytes = 0
@@ -226,6 +233,7 @@ async def metrics():
         ]
 
     from fastapi.responses import Response
+
     return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
@@ -285,10 +293,15 @@ async def upload_voice(
     if len(file) > settings.max_voice_upload_bytes:
         return JSONResponse(
             status_code=413,
-            content={"error": f"File too large ({len(file)} bytes, max {settings.max_voice_upload_bytes})"},
+            content={
+                "error": f"File too large ({len(file)} bytes, max {settings.max_voice_upload_bytes})"
+            },
         )
     if not _is_valid_wav(file):
-        return JSONResponse(status_code=400, content={"error": "Invalid file: expected a WAV (RIFF/WAVE) audio file"})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid file: expected a WAV (RIFF/WAVE) audio file"},
+        )
 
     VOICES_DIR.mkdir(exist_ok=True)
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", name)[:64] or "voice"
@@ -322,41 +335,41 @@ async def speak(
     api_key: Optional[APIKey] = Depends(require_api_key),
 ):
     """REST TTS endpoint — text in, audio out. For iOS Shortcuts, scripting, etc.
-    
+
     Request body:
         text: Text to synthesize
         agent: Agent name (metis, atlas, hephaestus, clio, deepthought, mara)
         voice: Override voice preset (optional)
         format: "wav" (default) or "pcm" (raw 16-bit/24kHz mono)
-    
+
     Returns: audio file (WAV or raw PCM)
     """
     if not text or not text.strip():
         return JSONResponse(status_code=400, content={"error": "text is required"})
-    
+
     text = text.strip()
-    
+
     # Apply agent voice personality control tokens if Higgs is available
     # For now, just pass text to Supertonic
     tts = app_state.tts
     if tts is None:
         return JSONResponse(status_code=503, content={"error": "TTS not available"})
-    
+
     try:
         # Sanitize text for TTS
         tts_text = sanitize_tts_symbols(text)
-        
+
         # Synthesize the full text
         audio_chunks = []
         async for chunk in tts.synthesize_stream(tts_text):
             audio_chunks.append(chunk)
-        
+
         if not audio_chunks:
             return JSONResponse(status_code=500, content={"error": "TTS produced no audio"})
-        
+
         # Concatenate all chunks into a single buffer
         # Chunks are raw PCM bytes (int16 at 24kHz mono)
-        pcm_bytes = b''.join(audio_chunks)
+        pcm_bytes = b"".join(audio_chunks)
 
         if api_key is not None:
             minutes = len(pcm_bytes) / 2 / 24000 / 60
@@ -370,7 +383,7 @@ async def speak(
                 content=pcm_bytes,
                 media_type="audio/pcm",
                 headers={
-                    "Content-Disposition": f"attachment; filename=\"speech.pcm\"",
+                    "Content-Disposition": f'attachment; filename="speech.pcm"',
                     "X-Sample-Rate": "24000",
                     "X-Channels": "1",
                     "X-Bits-Per-Sample": "16",
@@ -385,15 +398,15 @@ async def speak(
                 wf.setframerate(24000)
                 wf.writeframes(pcm_bytes)
             wav_bytes = buf.getvalue()
-            
+
             return Response(
                 content=wav_bytes,
                 media_type="audio/wav",
                 headers={
-                    "Content-Disposition": f"attachment; filename=\"speech.wav\"",
+                    "Content-Disposition": f'attachment; filename="speech.wav"',
                 },
             )
-    
+
     except Exception as e:
         logger.error(f"TTS API error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -408,15 +421,15 @@ async def chat(
     api_key: Optional[APIKey] = Depends(require_api_key),
 ):
     """Full voice chat endpoint — text in, spoken response out.
-    
+
     1. Sends text to OpenClaw gateway (LLM)
     2. Gets response text
     3. Synthesizes to speech
     4. Returns audio + session_id for continuity
-    
+
     For iOS Shortcuts: send a question, get a spoken answer.
     Include session_id from previous response to continue the conversation.
-    
+
     Request body:
         text: User message
         agent: Agent name
@@ -425,33 +438,33 @@ async def chat(
     """
     if not text or not text.strip():
         return JSONResponse(status_code=400, content={"error": "text is required"})
-    
+
     backend, sid = _get_or_create_session(session_id, agent)
     tts = app_state.tts
     if tts is None:
         return JSONResponse(status_code=503, content={"error": "Voice pipeline not available"})
-    
+
     try:
         # Get LLM response (using session backend for continuity)
         response_text = ""
         async for chunk in backend.chat_stream(text, agent_hint=agent):
             response_text += chunk
-        
+
         if not response_text.strip():
             return JSONResponse(status_code=500, content={"error": "LLM returned empty response"})
-        
+
         # Sanitize text for TTS
         tts_text = sanitize_tts_symbols(response_text)
-        
+
         # Synthesize
         audio_chunks = []
         async for chunk in tts.synthesize_stream(tts_text):
             audio_chunks.append(chunk)
-        
+
         if not audio_chunks:
             return JSONResponse(status_code=500, content={"error": "TTS produced no audio"})
-        
-        pcm_bytes = b''.join(audio_chunks)
+
+        pcm_bytes = b"".join(audio_chunks)
 
         if api_key is not None:
             minutes = len(pcm_bytes) / 2 / 24000 / 60
@@ -476,7 +489,7 @@ async def chat(
                 wf.setframerate(24000)
                 wf.writeframes(pcm_bytes)
             wav_bytes = buf.getvalue()
-            
+
             return Response(
                 content=wav_bytes,
                 media_type="audio/wav",
@@ -484,7 +497,7 @@ async def chat(
                     "X-Session-Id": sid,
                 },
             )
-    
+
     except Exception as e:
         logger.error(f"Chat API error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -498,45 +511,45 @@ async def chat_json(
     api_key: Optional[APIKey] = Depends(require_api_key),
 ):
     """Chat endpoint returning JSON with both audio (base64 WAV) and session_id.
-    
+
     For iOS Shortcuts that need to extract the session_id for continuity.
-    
+
     Request body:
         text: User message
         agent: Agent name
         session_id: (optional) Session ID from previous call
-    
+
     Returns JSON: {session_id: str, audio_base64: str, response_text: str}
     """
     if not text or not text.strip():
         return JSONResponse(status_code=400, content={"error": "text is required"})
-    
+
     backend, sid = _get_or_create_session(session_id, agent)
     tts = app_state.tts
     if tts is None:
         return JSONResponse(status_code=503, content={"error": "Voice pipeline not available"})
-    
+
     try:
         # Get LLM response
         response_text = ""
         async for chunk in backend.chat_stream(text, agent_hint=agent):
             response_text += chunk
-        
+
         if not response_text.strip():
             return JSONResponse(status_code=500, content={"error": "LLM returned empty response"})
-        
+
         # Sanitize for TTS
         tts_text = sanitize_tts_symbols(response_text)
-        
+
         # Synthesize
         audio_chunks = []
         async for chunk in tts.synthesize_stream(tts_text):
             audio_chunks.append(chunk)
-        
+
         if not audio_chunks:
             return JSONResponse(status_code=500, content={"error": "TTS produced no audio"})
-        
-        pcm_bytes = b''.join(audio_chunks)
+
+        pcm_bytes = b"".join(audio_chunks)
 
         if api_key is not None:
             minutes = len(pcm_bytes) / 2 / 24000 / 60
@@ -552,14 +565,17 @@ async def chat_json(
             wf.setframerate(24000)
             wf.writeframes(pcm_bytes)
         wav_bytes = buf.getvalue()
-        
+
         import base64
-        return JSONResponse(content={
-            "session_id": sid,
-            "audio_base64": base64.b64encode(wav_bytes).decode('ascii'),
-            "response_text": response_text,
-        })
-    
+
+        return JSONResponse(
+            content={
+                "session_id": sid,
+                "audio_base64": base64.b64encode(wav_bytes).decode("ascii"),
+                "response_text": response_text,
+            }
+        )
+
     except Exception as e:
         logger.error(f"Chat JSON API error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -620,6 +636,7 @@ async def websocket_endpoint(websocket: WebSocket):
     pipeline_task: Optional[asyncio.Task] = None
     session_agent: Optional[str] = None
     session_reconnected = False
+    session_voice_override: Optional[str] = None
     vad_endpoint: Optional[VADEndpoint] = None
     barge_in_vad: Optional[VADEndpoint] = None
 
@@ -661,8 +678,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     vad_endpoint = VADEndpoint(
                         app_state.vad,
                         threshold=settings.vad_threshold,
-                        min_silence_frames=max(1, settings.vad_silence_duration_ms * settings.sample_rate // settings.vad_frame_size // 1000),
-                        min_speech_frames=max(1, settings.vad_min_speech_duration_ms * settings.sample_rate // settings.vad_frame_size // 1000),
+                        min_silence_frames=max(
+                            1,
+                            settings.vad_silence_duration_ms
+                            * settings.sample_rate
+                            // settings.vad_frame_size
+                            // 1000,
+                        ),
+                        min_speech_frames=max(
+                            1,
+                            settings.vad_min_speech_duration_ms
+                            * settings.sample_rate
+                            // settings.vad_frame_size
+                            // 1000,
+                        ),
                         sample_rate=settings.sample_rate,
                     )
                 else:
@@ -670,24 +699,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"Agent selected: {session_agent}")
-                    async with _tts_lock:
-                        if (
-                            session_agent in ChatterboxTTS.AGENT_VOICE_MAP
-                            and app_state.tts is not None
-                            and app_state.tts._backend == "supertonic"
-                        ):
-                            new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]
-                            if new_voice != app_state.tts._supertonic_voice:
-                                try:
-                                    app_state.tts._supertonic_style = app_state.tts._supertonic_tts.get_voice_style(
-                                        new_voice
-                                    )
-                                    app_state.tts._supertonic_voice = new_voice
-                                    logger.info(
-                                        f"Switched TTS voice to {new_voice} for agent {session_agent}"
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"Failed to switch voice to {new_voice}: {e}")
                 session_reconnected = msg.get("reconnect", False)
                 await transport.send_json({"type": "listening_started"})
 
@@ -697,10 +708,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 if api_key is not None and not await token_manager.check_rate_limit(api_key):
                     await transport.send_json({"type": "error", "message": "rate_limited"})
                 else:
-                    session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
-                    pipeline_task = asyncio.create_task(
-                        _run_pipeline(audio_buffer, session)
+                    session = SessionContext(
+                        agent_id=session_agent,
+                        reconnect=session_reconnected,
+                        voice_id=session_voice_override,
                     )
+                    pipeline_task = asyncio.create_task(_run_pipeline(audio_buffer, session))
                 audio_buffer = []
                 buffer_samples = 0
                 await transport.send_json({"type": "listening_stopped"})
@@ -718,10 +731,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         audio_buffer.append(audio_np)
                         is_listening = False
                         vad_endpoint = None
-                        if api_key is not None and not await token_manager.check_rate_limit(api_key):
+                        if api_key is not None and not await token_manager.check_rate_limit(
+                            api_key
+                        ):
                             await transport.send_json({"type": "error", "message": "rate_limited"})
                         else:
-                            session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
+                            session = SessionContext(
+                                agent_id=session_agent,
+                                reconnect=session_reconnected,
+                                voice_id=session_voice_override,
+                            )
                             pipeline_task = asyncio.create_task(
                                 _run_pipeline(audio_buffer, session)
                             )
@@ -737,10 +756,18 @@ async def websocket_endpoint(websocket: WebSocket):
                             logger.debug("VAD endpoint: speech ended, processing buffer")
                             is_listening = False
                             vad_endpoint = None
-                            if api_key is not None and not await token_manager.check_rate_limit(api_key):
-                                await transport.send_json({"type": "error", "message": "rate_limited"})
+                            if api_key is not None and not await token_manager.check_rate_limit(
+                                api_key
+                            ):
+                                await transport.send_json(
+                                    {"type": "error", "message": "rate_limited"}
+                                )
                             else:
-                                session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
+                                session = SessionContext(
+                                    agent_id=session_agent,
+                                    reconnect=session_reconnected,
+                                    voice_id=session_voice_override,
+                                )
                                 pipeline_task = asyncio.create_task(
                                     _run_pipeline(audio_buffer, session)
                                 )
@@ -787,7 +814,13 @@ async def websocket_endpoint(websocket: WebSocket):
                                 vad_endpoint = VADEndpoint(
                                     app_state.vad,
                                     threshold=settings.vad_threshold,
-                                    min_silence_frames=max(1, settings.vad_silence_duration_ms * settings.sample_rate // settings.vad_frame_size // 1000),
+                                    min_silence_frames=max(
+                                        1,
+                                        settings.vad_silence_duration_ms
+                                        * settings.sample_rate
+                                        // settings.vad_frame_size
+                                        // 1000,
+                                    ),
                                     sample_rate=settings.sample_rate,
                                 )
                             await transport.send_json({"type": "listening_started"})
@@ -804,16 +837,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     safe_voice_id = re.sub(r"[^a-zA-Z0-9_-]", "", raw_voice_id)
                     voice_path = str(VOICES_DIR / f"{safe_voice_id}.wav")
                     if os.path.isfile(voice_path):
-                        if app_state.tts is not None:
-                            app_state.tts.voice_sample = voice_path
+                        session_voice_override = voice_path
                         await transport.send_json({"type": "voice_set", "voice_id": raw_voice_id})
                     else:
                         await transport.send_json(
                             {"type": "error", "message": f"Voice {raw_voice_id} not found"}
                         )
                 else:
-                    if app_state.tts is not None:
-                        app_state.tts.voice_sample = None
+                    session_voice_override = None
                     await transport.send_json({"type": "voice_set", "voice_id": "default"})
 
             elif msg_type == "clear_history":
@@ -840,13 +871,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # ── WebRTC signaling ─────────────────────────────────────────────
 
+
 @router.post("/api/webrtc/offer")
 async def webrtc_offer(body: dict, api_key: Optional[APIKey] = Depends(require_api_key)):
     """Accept a WebRTC SDP offer and return an SDP answer + session_id."""
     if not _webrtc_available:
         return JSONResponse(
             status_code=501,
-            content={"error": "WebRTC not available — install aiortc: pip install openclaw-voice[webrtc]"},
+            content={
+                "error": "WebRTC not available — install aiortc: pip install openclaw-voice[webrtc]"
+            },
         )
 
     transport = WebRTCTransport()
@@ -878,6 +912,7 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
     is_listening = False
     session_agent: Optional[str] = None
     session_reconnected = False
+    session_voice_override: Optional[str] = None
     rtp_collector_task: Optional[asyncio.Task] = None
     _buffer_overflow = asyncio.Event()
 
@@ -919,21 +954,6 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                 if "agent" in msg:
                     session_agent = msg["agent"]
                     logger.info(f"[webrtc:{session_id}] Agent selected: {session_agent}")
-                    async with _tts_lock:
-                        if (
-                            session_agent in ChatterboxTTS.AGENT_VOICE_MAP
-                            and app_state.tts is not None
-                            and app_state.tts._backend == "supertonic"
-                        ):
-                            new_voice = ChatterboxTTS.AGENT_VOICE_MAP[session_agent]
-                            if new_voice != app_state.tts._supertonic_voice:
-                                try:
-                                    app_state.tts._supertonic_style = (
-                                        app_state.tts._supertonic_tts.get_voice_style(new_voice)
-                                    )
-                                    app_state.tts._supertonic_voice = new_voice
-                                except Exception as e:
-                                    logger.warning(f"Failed to switch voice: {e}")
                 if transport._audio_input is not None and (
                     rtp_collector_task is None or rtp_collector_task.done()
                 ):
@@ -945,7 +965,11 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                 if rtp_collector_task is not None and not rtp_collector_task.done():
                     rtp_collector_task.cancel()
                     rtp_collector_task = None
-                session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
+                session = SessionContext(
+                    agent_id=session_agent,
+                    reconnect=session_reconnected,
+                    voice_id=session_voice_override,
+                )
                 if app_state.pipeline is not None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
                         await transport.send_event(event)
@@ -956,27 +980,25 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
 
             elif msg_type == "audio_frame" and is_listening:
                 try:
-                    audio_np = np.frombuffer(
-                        base64.b64decode(msg["data"]), dtype=np.float32
-                    )
+                    audio_np = np.frombuffer(base64.b64decode(msg["data"]), dtype=np.float32)
                 except Exception:
                     continue
 
                 buffer_samples += len(audio_np)
                 if buffer_samples > MAX_AUDIO_BUFFER_SAMPLES:
-                    logger.warning(
-                        f"[webrtc:{session_id}] Audio buffer cap, processing now"
-                    )
+                    logger.warning(f"[webrtc:{session_id}] Audio buffer cap, processing now")
                     audio_buffer.append(audio_np)
                     is_listening = False
                     if rtp_collector_task is not None and not rtp_collector_task.done():
                         rtp_collector_task.cancel()
                         rtp_collector_task = None
-                    session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
+                    session = SessionContext(
+                        agent_id=session_agent,
+                        reconnect=session_reconnected,
+                        voice_id=session_voice_override,
+                    )
                     if app_state.pipeline is not None:
-                        async for event in app_state.pipeline.process_audio(
-                            audio_buffer, session
-                        ):
+                        async for event in app_state.pipeline.process_audio(audio_buffer, session):
                             await transport.send_event(event)
                     audio_buffer = []
                     buffer_samples = 0
@@ -986,7 +1008,11 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
 
             if _buffer_overflow.is_set():
                 _buffer_overflow.clear()
-                session = SessionContext(agent_id=session_agent, reconnect=session_reconnected)
+                session = SessionContext(
+                    agent_id=session_agent,
+                    reconnect=session_reconnected,
+                    voice_id=session_voice_override,
+                )
                 if app_state.pipeline is not None:
                     async for event in app_state.pipeline.process_audio(audio_buffer, session):
                         await transport.send_event(event)
@@ -1002,14 +1028,10 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
                     safe_voice_id = re.sub(r"[^a-zA-Z0-9_-]", "", raw_voice_id)
                     voice_path = str(VOICES_DIR / f"{safe_voice_id}.wav")
                     if os.path.isfile(voice_path):
-                        if app_state.tts is not None:
-                            app_state.tts.voice_sample = voice_path
-                        await transport.send_json(
-                            {"type": "voice_set", "voice_id": raw_voice_id}
-                        )
+                        session_voice_override = voice_path
+                        await transport.send_json({"type": "voice_set", "voice_id": raw_voice_id})
                 else:
-                    if app_state.tts is not None:
-                        app_state.tts.voice_sample = None
+                    session_voice_override = None
                     await transport.send_json({"type": "voice_set", "voice_id": "default"})
 
             elif msg_type == "clear_history":

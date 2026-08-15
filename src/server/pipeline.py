@@ -84,7 +84,9 @@ class VoicePipeline:
             sentence_count = 0
 
             async for chunk in self._backend.chat_stream(
-                transcript, model=agent_model, agent_hint=session.agent_id,
+                transcript,
+                model=agent_model,
+                agent_hint=session.agent_id,
                 reconnect=session.reconnect,
             ):
                 full_response += chunk
@@ -102,14 +104,21 @@ class VoicePipeline:
                     sentence, sentence_buffer = parts[0].strip(), parts[1]
 
                     if sentence:
-                        async for event in self._speak_sentence(sentence, audio_seq):
+                        async for event in self._speak_sentence(
+                            sentence, audio_seq, voice=session.voice_id, agent_hint=session.agent_id
+                        ):
                             yield event
                         sentence_count += 1
                         if t_first_audio is None:
                             t_first_audio = time.monotonic() - t_start
 
             if sentence_buffer.strip():
-                async for event in self._speak_sentence(sentence_buffer.strip(), audio_seq):
+                async for event in self._speak_sentence(
+                    sentence_buffer.strip(),
+                    audio_seq,
+                    voice=session.voice_id,
+                    agent_hint=session.agent_id,
+                ):
                     yield event
                 sentence_count += 1
 
@@ -136,6 +145,8 @@ class VoicePipeline:
         self,
         text: str,
         seq: int,
+        voice: Optional[str] = None,
+        agent_hint: Optional[str] = None,
     ) -> AsyncIterator[ServerEvent]:
         """Synthesize one sentence to audio chunks, yielding start/chunk/end events."""
         speech_text = clean_for_speech(text)
@@ -144,7 +155,9 @@ class VoicePipeline:
 
         yield SentenceStartEvent(seq=seq)
         try:
-            async for audio_chunk in self._tts.synthesize_stream(speech_text):
+            async for audio_chunk in self._tts.synthesize_stream(
+                speech_text, voice=voice, agent_hint=agent_hint
+            ):
                 yield AudioChunkEvent(data=audio_chunk, seq=seq)
         except Exception as tts_err:
             logger.error(f"TTS error: {tts_err}")

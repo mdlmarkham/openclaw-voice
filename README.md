@@ -63,6 +63,13 @@ PYTHONPATH=. python -m uvicorn src.server.main:app --host 0.0.0.0 --port 8765
 | `SUPERTONIC_MODEL` | No | `supertonic-2` | Supertonic model version |
 | `OPENCLAW_REQUIRE_AUTH` | No | `false` | Require API keys for WebSocket clients |
 | `OPENCLAW_MASTER_KEY` | No | — | Master key for API key management |
+| `OPENCLAW_VOICE_MODEL` | No | — | Global voice model suffix (e.g. `glm-5.1:cloud`). Applied as `openclaw/<agent>/<model>` |
+| `OPENCLAW_VOICE_MODEL_METIS` | No | — | Per-agent override for Métis (wins over global) |
+| `OPENCLAW_VOICE_MODEL_ATLAS` | No | — | Per-agent override for Atlas |
+| `OPENCLAW_VOICE_MODEL_HEPHAESTUS` | No | — | Per-agent override for Hephaestus |
+| `OPENCLAW_VOICE_MODEL_CLIO` | No | — | Per-agent override for Clio |
+| `OPENCLAW_VOICE_MODEL_DEEPTHOUGHT` | No | — | Per-agent override for DeepThought |
+| `OPENCLAW_VOICE_MODEL_MARA` | No | — | Per-agent override for Mara |
 
 > **OpenClaw gateway mode (recommended):** Set `OPENCLAW_GATEWAY_URL` and `OPENCLAW_GATEWAY_TOKEN`. The server sends only the user message to the gateway — no conversation history duplication. The gateway maintains full agent persona, memory, and workspace context, giving you seamless continuity between voice and text channels.
 >

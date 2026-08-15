@@ -75,7 +75,6 @@ class VoicePipeline:
 
             full_response = ""
             sentence_buffer = ""
-            agent_model = f"openclaw/{session.agent_id}" if session.agent_id else None
 
             audio_seq = 0
             t_llm_start = time.monotonic()
@@ -85,7 +84,6 @@ class VoicePipeline:
 
             async for chunk in self._backend.chat_stream(
                 transcript,
-                model=agent_model,
                 agent_hint=session.agent_id,
                 reconnect=session.reconnect,
                 session_id=session.session_id or "default",

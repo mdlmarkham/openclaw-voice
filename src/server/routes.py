@@ -79,15 +79,15 @@ def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
     openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
 
     if gateway_url and gateway_token:
-        # OpenClaw gateway mode
-        voice_model = settings.voice_model or app_state.backend.model if app_state.backend else None
-        model_id = voice_model
-        if model_id and not model_id.startswith(("openclaw/", "ollama/", "nvidia/", "synthetic/")):
-            model_id = f"openclaw/metis/{model_id}"
+        # OpenClaw gateway mode — resolve model per-agent (issue #3)
+        from .backend import resolve_openclaw_model
+
+        model_id = resolve_openclaw_model(agent, settings.voice_model)
         backend = AIBackend(
             backend_type="openclaw",
             url=f"{gateway_url}/v1",
-            model=model_id or "openclaw/metis/glm-5.1:cloud",
+            model=model_id,
+            voice_model_default=settings.voice_model,
             api_key=gateway_token,
             system_prompt="",
         )

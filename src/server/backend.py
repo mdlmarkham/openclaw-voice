@@ -119,6 +119,31 @@ FULL_SYSTEM_PROMPT = (
 )
 
 
+def resolve_openclaw_model(agent_id: Optional[str], global_default: Optional[str] = None) -> str:
+    """Resolve the OpenClaw model ID for a given agent.
+
+    Priority: per-agent env override > global OPENCLAW_VOICE_MODEL > bare
+    "openclaw/<agent>" (lets the gateway apply the agent's own default model).
+
+    Args:
+        agent_id: The agent name (e.g. "metis", "atlas"). Defaults to "metis".
+        global_default: The global voice_model setting (settings.voice_model).
+
+    Returns:
+        A model ID string like "openclaw/metis/glm-5.1:cloud" or "openclaw/atlas".
+    """
+    from .config import settings
+
+    agent = agent_id or "metis"
+    per_agent = getattr(settings, f"voice_model_{agent}", None)
+    model_suffix = per_agent or global_default
+    if not model_suffix:
+        return f"openclaw/{agent}"
+    if model_suffix.startswith(("openclaw/", "ollama/", "nvidia/", "synthetic/")):
+        return model_suffix
+    return f"openclaw/{agent}/{model_suffix}"
+
+
 class AIBackend:
     """AI backend for processing user messages."""
 
@@ -131,12 +156,14 @@ class AIBackend:
         model: str = "gpt-4o-mini",
         api_key: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        voice_model_default: Optional[str] = None,
     ):
         self.backend_type = backend_type
         self.url = url
         self.model = model
         self.api_key = api_key
         self.system_prompt = system_prompt or FULL_SYSTEM_PROMPT
+        self._voice_model_default = voice_model_default
         self._session_histories: Dict[str, List[Dict]] = {}
         self._session_last_used: Dict[str, float] = {}
         self._history_lock = asyncio.Lock()
@@ -160,7 +187,6 @@ class AIBackend:
                 logger.warning(f"OpenAI client failed ({e}), using echo fallback")
         elif self.backend_type == "openclaw":
             # OpenClaw gateway uses OpenAI-compatible API
-            # Route to the metis agent via model field
             try:
                 from openai import AsyncOpenAI
 
@@ -168,11 +194,13 @@ class AIBackend:
                     api_key=self.api_key or "openclaw-voice",
                     base_url=self.url,
                 )
-                # Use openclaw/<agentId> model format to route to the metis agent
-                # This gives the voice interface full access to Métis persona,
-                # memory, and workspace context
-                self.model = "openclaw/metis"
-                logger.info(f"✅ OpenClaw gateway client ready (url: {self.url}, agent: metis)")
+                # self.model is NOT overwritten here — whatever was passed into
+                # __init__ (or resolved per-agent at call time) stands. The
+                # per-request model is resolved in chat_stream via
+                # resolve_openclaw_model(agent_hint, ...). See issue #3.
+                logger.info(
+                    f"✅ OpenClaw gateway client ready (url: {self.url}, model: {self.model})"
+                )
             except ImportError:
                 logger.error("openai package not installed")
             except Exception as e:
@@ -198,18 +226,37 @@ class AIBackend:
             self._session_last_used.pop(sid, None)
         return self._session_histories.setdefault(session_id, [])
 
-    async def chat(self, user_message: str, model: str = None, session_id: str = "default") -> str:
+    def _resolve_model(self, agent_hint: Optional[str] = None) -> str:
+        """Resolve the model ID for this request.
+
+        For openclaw backend: uses resolve_openclaw_model() to respect
+        per-agent env overrides and global default (issue #3).
+        For other backends: returns self.model.
+        """
+        if self.backend_type == "openclaw":
+            return resolve_openclaw_model(agent_hint, self._voice_model_default)
+        return self.model
+
+    async def chat(
+        self,
+        user_message: str,
+        model: str = None,
+        session_id: str = "default",
+        agent_hint: Optional[str] = None,
+    ) -> str:
         """
         Send a message and get a response.
 
         Args:
             user_message: The user's transcribed speech
             model: Override model/agent for this request (e.g. 'openclaw/metis')
+            session_id: Per-session ID for conversation history isolation
+            agent_hint: Per-request agent ID for model resolution
 
         Returns:
             AI response text
         """
-        use_model = model or self.model
+        use_model = model or self._resolve_model(agent_hint)
         if (self.backend_type in ("openai", "openclaw")) and self._client:
             return await self._chat_openai(user_message, model=use_model, session_id=session_id)
         else:
@@ -239,7 +286,7 @@ class AIBackend:
         Yields:
             Text chunks as they're generated
         """
-        use_model = model or self.model
+        use_model = model or self._resolve_model(agent_hint)
         if (self.backend_type in ("openai", "openclaw")) and self._client:
             async for chunk in self._chat_openai_stream(
                 user_message,

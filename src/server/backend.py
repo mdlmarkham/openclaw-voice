@@ -122,26 +122,22 @@ FULL_SYSTEM_PROMPT = (
 def resolve_openclaw_model(agent_id: Optional[str], global_default: Optional[str] = None) -> str:
     """Resolve the OpenClaw model ID for a given agent.
 
-    Priority: per-agent env override > global OPENCLAW_VOICE_MODEL > bare
-    "openclaw/<agent>" (lets the gateway apply the agent's own default model).
+    The OpenClaw gateway's /v1/chat/completions only accepts `openclaw` or
+    `openclaw/<agentId>` as the model — it rejects raw provider-prefixed
+    model IDs (e.g. `nvidia/...`, `ollama/...`). So we always return
+    `openclaw/<agent>` and let the gateway route to the agent's configured
+    model. The per-agent/global model overrides are intentionally NOT passed
+    as a raw model name (that caused a 400 "Invalid model" error).
 
     Args:
         agent_id: The agent name (e.g. "metis", "atlas"). Defaults to "metis".
-        global_default: The global voice_model setting (settings.voice_model).
+        global_default: Ignored for the gateway call (kept for signature compat).
 
     Returns:
-        A model ID string like "openclaw/metis/glm-5.1:cloud" or "openclaw/atlas".
+        "openclaw/<agent>" — the only model format the gateway accepts.
     """
-    from .config import settings
-
     agent = agent_id or "metis"
-    per_agent = getattr(settings, f"voice_model_{agent}", None)
-    model_suffix = per_agent or global_default
-    if not model_suffix:
-        return f"openclaw/{agent}"
-    if model_suffix.startswith(("openclaw/", "ollama/", "nvidia/", "synthetic/")):
-        return model_suffix
-    return f"openclaw/{agent}/{model_suffix}"
+    return f"openclaw/{agent}"
 
 
 class AIBackend:

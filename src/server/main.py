@@ -57,6 +57,18 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Authentication DISABLED (dev mode)")
 
+    # Limit torch to a single thread to prevent OpenMP thread-pool deadlocks
+    # when VAD (Silero) and STT (whisper) run torch inference concurrently
+    # in the same process. Concurrent multi-threaded torch calls can deadlock
+    # on the internal OpenMP pool; serializing inference avoids this.
+    try:
+        import torch
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+        logger.info(f"🔧 torch threads limited to 1 (deadlock prevention)")
+    except Exception as e:
+        logger.warning(f"Could not limit torch threads: {e}")
+
     state.stt_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
     state.tts_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts")
     state.vad_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vad")

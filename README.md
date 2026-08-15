@@ -304,7 +304,6 @@ openclaw-voice/
 ├── .env.example             # Configuration template
 ├── pyproject.toml           # Dependencies and metadata
 ├── Dockerfile               # GPU-enabled Docker image
-└── .beads/                  # Issue tracking (Beads)
 ```
 
 ## License

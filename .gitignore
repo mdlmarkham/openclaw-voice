@@ -12,9 +12,4 @@ build/
 *.log
 .DS_Store
 
-# Beads / Dolt files (added by bd init)
-.dolt/
 *.db
-.beads-credential-key
-.beads/interactions.jsonl
-.beads/export-state.json

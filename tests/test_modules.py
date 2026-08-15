@@ -483,13 +483,12 @@ class TestTTSVoiceCloningLocalBackend:
         against one shared instance must each receive their own voice — never
         None and never the other session's voice.
 
-        NOTE: this verifies *parameter* threading isolation. Whether the
-        underlying chatterbox/xtts model object is itself safe for concurrent
-        .generate()/.tts() calls is a separate concern tracked in a follow-up
-        issue — do not assume it is fine just because the parameters are.
+        #27 added a per-instance lock that serializes generate() calls, so the
+        Barrier(2) used previously (to force overlap) would now deadlock. The
+        parameter-threading isolation is still verified here; the serialization
+        itself is tested in TestTTSLocalModelLock.
         """
         tts, calls = self._make_fake_local(monkeypatch, "chatterbox")
-        tts.model.barrier = threading.Barrier(2, timeout=10)
 
         async def run(text, voice):
             async for _ in tts.synthesize_stream(text, voice=voice):
@@ -503,10 +502,192 @@ class TestTTSVoiceCloningLocalBackend:
         by_text = {c["text"]: c for c in calls}
         assert by_text["alpha sentence"]["voice"] == "/voices/clone_a.wav"
         assert by_text["bravo sentence"]["voice"] == "/voices/clone_b.wav"
-        # Neither call dropped the voice (the original bug). The Barrier(2)
-        # not raising BrokenBarrierError proves both were inside generate()
-        # simultaneously — the exact precondition for cross-talk.
         assert all(c["voice"] is not None for c in calls)
+
+
+class TestTTSLocalModelLock:
+    """Regression tests for issue #27: serialize local-backend synthesis to
+    protect shared model state.
+
+    Investigation confirmed neither Chatterbox nor XTTS is thread-safe:
+
+    - Chatterbox ``generate()`` mutates ``self.conds`` via
+      ``prepare_conditionals()`` (chatterbox/tts.py:220) before reading it in
+      ``t3.inference()`` (line 247). Concurrent calls overwrite each other's
+      voice conditioning state.
+    - XTTS ``Synthesizer.tts()`` mutates ``self.voice_dir``; the GPT model uses
+      a shared KV cache (``kv_cache=True``) that corrupts under concurrent
+      ``generate()`` calls; ``do_sample=True`` interleaves global RNG draws.
+
+    Fix: a per-instance ``_local_model_lock`` serializes ``model.generate()``
+    / ``model.tts()`` in ``_synthesize_sync_local``. Cloud backends and
+    Supertonic (read-only style cache from #10) are unaffected.
+    """
+
+    def _make_stateful_fake(self, monkeypatch, backend):
+        """Return (ChatterboxTTS with a stateful fake model, calls, violations).
+
+        The fake mimics the real thread-safety bugs: ``generate()``/``tts()``
+        writes a ``shared_state`` attr (simulating Chatterbox's ``self.conds``
+        or XTTS's ``self.voice_dir``) at entry, then reads it back after a
+        delay. Without the lock, the second concurrent call overwrites
+        ``shared_state`` before the first reads it — exactly the race.
+
+        ``violations`` records any time the model was entered while another
+        call was still running (i.e., the lock failed to serialize).
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.setattr(ChatterboxTTS, "_load_model", lambda self: None)
+        tts = ChatterboxTTS(executor=ThreadPoolExecutor(max_workers=4))
+        tts._backend = backend
+        tts.voice_sample = None
+
+        calls = []
+        violations = []
+        _in_call = threading.Event()
+
+        class _FakeTensor:
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return np.zeros(2400, dtype=np.float32)
+
+        class FakeModel:
+            def __init__(self):
+                self.shared_state = None
+
+            def generate(self, text, audio_prompt=None):
+                self.shared_state = audio_prompt
+                if _in_call.is_set():
+                    violations.append("concurrent generate")
+                _in_call.set()
+                try:
+                    time.sleep(0.05)
+                    observed = self.shared_state
+                    calls.append({"text": text, "voice": audio_prompt, "observed": observed})
+                finally:
+                    _in_call.clear()
+                return _FakeTensor()
+
+            def tts(self, text, speaker_wav=None, language="en"):
+                self.shared_state = speaker_wav
+                if _in_call.is_set():
+                    violations.append("concurrent tts")
+                _in_call.set()
+                try:
+                    time.sleep(0.05)
+                    observed = self.shared_state
+                    calls.append({"text": text, "voice": speaker_wav, "observed": observed})
+                finally:
+                    _in_call.clear()
+                return np.zeros(2400, dtype=np.float32)
+
+        tts.model = FakeModel()
+        return tts, calls, violations
+
+    @pytest.mark.asyncio
+    async def test_chatterbox_lock_serializes_concurrent_calls(self, monkeypatch):
+        """The _local_model_lock must serialize concurrent generate() calls so
+        shared model state (self.conds in real Chatterbox) is never overwritten
+        mid-synthesis. Without the lock, the fake's shared_state would be
+        clobbered by the second call before the first reads it back."""
+        tts, calls, violations = self._make_stateful_fake(monkeypatch, "chatterbox")
+
+        async def run(text, voice):
+            async for _ in tts.synthesize_stream(text, voice=voice):
+                pass
+
+        await asyncio.gather(
+            run("alpha", voice="/voices/a.wav"),
+            run("bravo", voice="/voices/b.wav"),
+        )
+
+        assert violations == []
+        by_text = {c["text"]: c for c in calls}
+        assert by_text["alpha"]["observed"] == "/voices/a.wav"
+        assert by_text["bravo"]["observed"] == "/voices/b.wav"
+
+    @pytest.mark.asyncio
+    async def test_xtts_lock_serializes_concurrent_calls(self, monkeypatch):
+        """Same serialization test for the XTTS backend path (model.tts)."""
+        tts, calls, violations = self._make_stateful_fake(monkeypatch, "xtts")
+
+        async def run(text, voice):
+            async for _ in tts.synthesize_stream(text, voice=voice):
+                pass
+
+        await asyncio.gather(
+            run("alpha", voice="/voices/a.wav"),
+            run("bravo", voice="/voices/b.wav"),
+        )
+
+        assert violations == []
+        by_text = {c["text"]: c for c in calls}
+        assert by_text["alpha"]["observed"] == "/voices/a.wav"
+        assert by_text["bravo"]["observed"] == "/voices/b.wav"
+
+    @pytest.mark.asyncio
+    async def test_lock_does_not_serialize_mock_backend(self, monkeypatch):
+        """The mock backend has no shared model state, so the lock is not
+        acquired — two concurrent mock calls should both complete without
+        blocking. This verifies the lock is scoped to chatterbox/xtts only."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.setattr(ChatterboxTTS, "_load_model", lambda self: None)
+        tts = ChatterboxTTS(executor=ThreadPoolExecutor(max_workers=4))
+        tts._backend = "mock"
+
+        results = []
+
+        async def run(text):
+            await tts.synthesize(text)
+            results.append(text)
+
+        await asyncio.gather(run("a"), run("b"))
+        assert set(results) == {"a", "b"}
+
+    @pytest.mark.asyncio
+    async def test_lock_allows_concurrent_cloud_and_local(self, monkeypatch):
+        """The local-model lock must not block Supertonic (or other non-local
+        backends). A Supertonic call and a chatterbox call can run concurrently
+        without the local lock affecting the Supertonic path."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.setattr(ChatterboxTTS, "_load_model", lambda self: None)
+        sup = ChatterboxTTS(executor=ThreadPoolExecutor(max_workers=4))
+        sup._backend = "supertonic"
+        sup._supertonic_sr = 24000
+        sup._supertonic_voice = "F2"
+        sup._supertonic_style = "POLLUTED"
+        sup._voice_style_cache = {}
+
+        class FakeSupertonic:
+            voice_style_names = ["F2", "M2"]
+
+            def get_voice_style(self, name):
+                return f"style:{name}"
+
+            def synthesize(self, text, voice_style=None):
+                return (np.zeros((1, 2400), dtype=np.float32),)
+
+        sup._supertonic_tts = FakeSupertonic()
+
+        tts, calls, violations = self._make_stateful_fake(monkeypatch, "chatterbox")
+
+        async def run_supertonic():
+            async for _ in sup.synthesize_stream("supertonic text", voice="M2"):
+                pass
+
+        async def run_local():
+            async for _ in tts.synthesize_stream("local text", voice="/voices/a.wav"):
+                pass
+
+        await asyncio.gather(run_supertonic(), run_local())
+
+        assert violations == []
+        assert calls[-1]["observed"] == "/voices/a.wav"
 
 
 class TestTTSUtils:

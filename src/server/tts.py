@@ -196,17 +196,19 @@ class ChatterboxTTS:
             result["sample_rate"] = 24000
         return result
 
-    async def synthesize(self, text: str) -> np.ndarray:
+    async def synthesize(self, text: str, voice: Optional[str] = None) -> np.ndarray:
         """Synthesize speech from text. Returns float32 numpy array at native sample rate."""
         if self._backend == "supertonic":
-            return await self._synthesize_supertonic(text)
+            return await self._synthesize_supertonic(text, voice=voice)
         elif self._backend == "edge":
             return await self._synthesize_edge(text)
         elif self._backend == "elevenlabs":
             return await self._synthesize_elevenlabs(text)
         elif self._backend in ("chatterbox", "xtts"):
             loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(self._executor, self._synthesize_sync_local, text)
+            return await loop.run_in_executor(
+                self._executor, self._synthesize_sync_local, text, voice
+            )
         else:
             return np.zeros(12000, dtype=np.float32)
 
@@ -307,7 +309,7 @@ class ChatterboxTTS:
         else:
             # Fallback: synthesize then yield as one chunk
             try:
-                audio = await self.synthesize(text)
+                audio = await self.synthesize(text, voice=voice)
                 if audio is not None and len(audio) > 0:
                     audio_int16 = float32_to_int16(audio)
                     yield audio_int16.tobytes()
@@ -434,18 +436,25 @@ class ChatterboxTTS:
             logger.error(f"ElevenLabs TTS error: {e}")
             raise
 
-    def _synthesize_sync_local(self, text: str) -> np.ndarray:
-        """Synchronous synthesis for local models (chatterbox, xtts)."""
+    def _synthesize_sync_local(self, text: str, voice: Optional[str] = None) -> np.ndarray:
+        """Synchronous synthesis for local models (chatterbox, xtts).
+
+        Per-call ``voice`` overrides the constructor-time ``self.voice_sample``
+        default — same pattern as Supertonic's ``_resolve_voice_style``. This
+        must not mutate ``self.voice_sample`` so concurrent sessions sharing one
+        instance never cross-contaminate (issue #10 / #25).
+        """
+        voice_sample = voice or self.voice_sample
         if self._backend == "chatterbox":
-            if self.voice_sample:
-                audio = self.model.generate(text, audio_prompt=self.voice_sample)
+            if voice_sample:
+                audio = self.model.generate(text, audio_prompt=voice_sample)
             else:
                 audio = self.model.generate(text)
             return audio.cpu().numpy().astype(np.float32)
 
         elif self._backend == "xtts":
-            if self.voice_sample:
-                wav = self.model.tts(text=text, speaker_wav=self.voice_sample, language="en")
+            if voice_sample:
+                wav = self.model.tts(text=text, speaker_wav=voice_sample, language="en")
             else:
                 wav = self.model.tts(text=text, language="en")
             return np.array(wav, dtype=np.float32)

@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.server.stt import WhisperSTT
-from src.server.tts import ChatterboxTTS
+from src.server.tts import ChatterboxTTS, TTSRouter, TTSCache
 from src.server.backend import AIBackend
 from src.server.vad import VoiceActivityDetector
 
@@ -151,6 +151,45 @@ class TestVAD:
         noise = np.random.randn(16000).astype(np.float32)
         result = vad.is_speech(noise)
         assert isinstance(result, bool)
+
+
+class TestTTSRouter:
+    """Tests for TTSRouter active_backend logic (#6)."""
+
+    def test_active_backend_higgs_auto_available(self):
+        """active_backend returns 'higgs' when backend='auto' and Higgs is available."""
+        # Mock supertonic
+        sup = ChatterboxTTS()
+        sup._backend = "supertonic"
+
+        class MockHiggs:
+            available = True
+
+        router = TTSRouter(supertonic=sup, higgs=MockHiggs(), backend="auto")
+        assert router.active_backend == "higgs"
+
+    def test_active_backend_higgs_explicit_opt_out(self):
+        """active_backend does NOT return 'higgs' when backend='supertonic' even if Higgs available."""
+        sup = ChatterboxTTS()
+        sup._backend = "supertonic"
+
+        class MockHiggs:
+            available = True
+
+        router = TTSRouter(supertonic=sup, higgs=MockHiggs(), backend="supertonic")
+        assert router.active_backend != "higgs"
+        assert router.active_backend == "supertonic"
+
+    def test_active_backend_fallback_when_higgs_unavailable(self):
+        """active_backend falls back to supertonic when Higgs unavailable."""
+        sup = ChatterboxTTS()
+        sup._backend = "supertonic"
+
+        class MockHiggs:
+            available = False
+
+        router = TTSRouter(supertonic=sup, higgs=MockHiggs(), backend="auto")
+        assert router.active_backend == "supertonic"
 
 
 class TestIntegration:

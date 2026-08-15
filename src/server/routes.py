@@ -105,6 +105,13 @@ def _get_or_create_session(session_id: Optional[str], agent: str) -> tuple:
 
 _tts_lock = asyncio.Lock()
 
+WAV_MAGIC_RIFF = b"RIFF"
+WAV_MAGIC_WAVE = b"WAVE"
+
+def _is_valid_wav(data: bytes) -> bool:
+    """Cheap magic-byte check: RIFF....WAVE header."""
+    return len(data) >= 12 and data[0:4] == WAV_MAGIC_RIFF and data[8:12] == WAV_MAGIC_WAVE
+
 try:
     from .webrtc import WebRTCTransport, register_session, remove_session
 
@@ -223,6 +230,16 @@ async def upload_voice(
     api_key: Optional[APIKey] = Depends(require_api_key),
 ):
     """Upload a voice sample for TTS cloning. Returns a voice ID."""
+    if len(file) == 0:
+        return JSONResponse(status_code=400, content={"error": "Empty upload"})
+    if len(file) > settings.max_voice_upload_bytes:
+        return JSONResponse(
+            status_code=413,
+            content={"error": f"File too large ({len(file)} bytes, max {settings.max_voice_upload_bytes})"},
+        )
+    if not _is_valid_wav(file):
+        return JSONResponse(status_code=400, content={"error": "Invalid file: expected a WAV (RIFF/WAVE) audio file"})
+
     VOICES_DIR.mkdir(exist_ok=True)
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", name)[:64] or "voice"
     voice_id = f"{safe_name}_{secrets.token_hex(4)}"

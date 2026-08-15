@@ -466,9 +466,12 @@ class TTSRouter:
     def available(self) -> bool:
         return self._supertonic is not None
 
+    def _prefer_higgs(self) -> bool:
+        return self._backend != "supertonic" and bool(self._higgs) and self._higgs.available
+
     @property
     def active_backend(self) -> str:
-        if self._backend == "higgs" and self._higgs and self._higgs.available:
+        if self._prefer_higgs():
             return "higgs"
         return self._supertonic._backend if self._supertonic else "mock"
 
@@ -491,7 +494,7 @@ class TTSRouter:
             return
 
         chunks: list[bytes] = []
-        prefer_higgs = self._backend != "supertonic" and self._higgs and self._higgs.available
+        prefer_higgs = self._prefer_higgs()
 
         if prefer_higgs:
             enriched = _inject_control_tokens(text, agent_hint) if agent_hint else text

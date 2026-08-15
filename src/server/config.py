@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     system_prompt: str = "unused_in_openclaw_mode"
 
+    max_voice_upload_bytes: int = 10 * 1024 * 1024
+
     model_config = ConfigDict(
         env_prefix="OPENCLAW_",
         env_file=".env",

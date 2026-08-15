@@ -598,8 +598,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 async for event in app_state.pipeline.process_audio(buf, session):
                     await transport.send_event(event)
         except asyncio.CancelledError:
-            logger.debug("Pipeline cancelled (barge-in)")
-            await transport.send_json({"type": "interrupt"})
+            logger.debug("Pipeline cancelled (barge-in or disconnect)")
+            try:
+                await transport.send_json({"type": "interrupt"})
+            except Exception:
+                pass  # socket may already be closed (disconnect case)
             raise
         finally:
             is_playing = False
@@ -790,6 +793,14 @@ async def websocket_endpoint(websocket: WebSocket):
         await transport.close()
     finally:
         keepalive_task.cancel()
+        if pipeline_task is not None and not pipeline_task.done():
+            pipeline_task.cancel()
+            try:
+                await pipeline_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as cancel_err:
+                logger.debug(f"pipeline_task cleanup error for {client_id}: {cancel_err}")
         logger.info(f"WebSocket disconnected: {client_id}")
 
 

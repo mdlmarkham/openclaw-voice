@@ -139,6 +139,40 @@ Override with `SUPERTONIC_VOICE` env var, or extend `ChatterboxTTS.AGENT_VOICE_M
 
 When connected to the OpenClaw gateway, the voice server sends **only** the user's message and a voice-modality system hint. The gateway manages the full conversation — persona, workspace context, long-term memory. This means a conversation started in Telegram continues seamlessly in voice, and vice versa. No history duplication.
 
+## Positioning: Browser Talk vs. OpenClaw Voice
+
+OpenClaw ships two browser-based surfaces for talking to your agents, and
+it's easy to conflate them:
+
+| | **Talk** (text chat UI) | **OpenClaw Voice** (this repo) |
+|---|---|---|
+| Modality | Typed text in, typed text out | Spoken audio in, spoken audio out |
+| Transport | HTTP(S) to the OpenClaw gateway directly | WebSocket / WebRTC to this voice server, which itself talks to the gateway |
+| What it owns | Chat UI, message history rendering, tool-call display | Microphone capture, STT (Whisper), VAD/barge-in, TTS (Supertonic/Higgs/ElevenLabs), audio streaming |
+| Memory model | Reads/writes gateway-managed conversation memory directly | Sends **only** the user's transcribed utterance + a voice-modality system hint — never duplicates or owns conversation history when running against the gateway |
+| When to use | Reading, reviewing, or typing at length; anywhere a keyboard/screen is the natural interface | Hands-free, mobile, or "ambient" interaction — driving, walking, or any time speaking is faster than typing |
+
+**They are companion surfaces, not competitors.** Because both talk to the
+same OpenClaw gateway and neither owns its own private conversation store,
+a conversation you start by voice on your phone continues seamlessly if you
+pick it up in Talk on your desktop, and vice versa — the same guarantee this
+README already makes for voice ↔ Telegram continuity.
+
+**What OpenClaw Voice deliberately does *not* do:**
+- It does not render chat history, tool outputs, or rich text — everything
+  is spoken, so responses are kept short and markdown-free by the
+  per-agent voice hints in `AGENT_VOICE_CONFIG` (`src/server/backend.py`).
+- It does not replace Talk for tasks that benefit from reading long output,
+  reviewing diffs, or referencing earlier messages visually.
+- In **direct OpenAI mode** (no `OPENCLAW_GATEWAY_URL` configured), this
+  guarantee doesn't apply — conversation state is local to this voice
+  server and is not shared with Talk or any other channel. Cross-channel
+  continuity requires the OpenClaw gateway.
+
+> Note for maintainers: link Talk's repo/URL here once this section is
+> reviewed — e.g. `[Talk](https://github.com/<org>/<talk-repo>)` —
+> so readers can find the companion project.
+
 ## HTTPS for Mobile
 
 Mobile browsers require HTTPS for microphone access.

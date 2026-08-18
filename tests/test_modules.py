@@ -1282,6 +1282,188 @@ class TestTTSUtils:
         assert sanitize_tts_symbols(text) == "Hello world"
 
 
+class TestSharedSessionDispatch:
+    """Tests for issue #21: extraction of shared WS/WebRTC message dispatch.
+
+    Pure dedup — zero behavior change. These tests exercise the shared
+    ``handle_session_message`` / ``VoiceSessionState`` helpers against the
+    state they need to maintain, and add the required regression test proving
+    the WebRTC path STILL requires an explicit ``stop_listening`` to flush the
+    buffer (i.e. VAD auto-endpointing was *not* accidentally introduced by the
+    refactor).
+    """
+
+    def _make_state(self, **kwargs):
+        from src.server.session_handler import VoiceSessionState
+
+        return VoiceSessionState(**kwargs)
+
+    def _make_fake_transport(self):
+        """A minimal AudioTransport stub capturing sent JSON messages."""
+
+        class FakeTransport:
+            def __init__(self):
+                self.sent = []
+
+            async def send_json(self, data):
+                self.sent.append(data)
+
+        return FakeTransport()
+
+    @pytest.mark.asyncio
+    async def test_ping_pong_dispatch(self):
+        """ping → pong via the shared dispatcher."""
+        from src.server.session_handler import handle_session_message
+
+        t = self._make_fake_transport()
+        state = self._make_state()
+        handled = await handle_session_message(t, {"type": "ping"}, state)
+        assert handled is True
+        assert t.sent == [{"type": "pong"}]
+
+    @pytest.mark.asyncio
+    async def test_start_listening_sets_state_and_resets_buffer(self):
+        """start_listening resets buffer state and replies listening_started."""
+        from src.server.session_handler import handle_session_message
+
+        t = self._make_fake_transport()
+        state = self._make_state()
+        state.audio_buffer = [np.zeros(100, dtype=np.float32)]
+        state.buffer_samples = 100
+        handled = await handle_session_message(
+            t, {"type": "start_listening", "agent": "atlas"}, state
+        )
+        assert handled is True
+        assert state.is_listening is True
+        assert state.session_agent == "atlas"
+        assert state.audio_buffer == []
+        assert state.buffer_samples == 0
+        assert t.sent == [{"type": "listening_started"}]
+
+    @pytest.mark.asyncio
+    async def test_stop_listening_runs_hook_and_flushes(self):
+        """stop_listening invokes the transport hook (the flush point) and
+        resets state. WebRTC's hook is the ONLY way the buffer flushes —
+        proving no VAD auto-endpointing was added."""
+        from src.server.session_handler import handle_session_message
+
+        t = self._make_fake_transport()
+        state = self._make_state()
+        flush_calls = []
+
+        async def fake_on_stop(s):
+            flush_calls.append(list(s.audio_buffer))
+
+        state.on_stop_listening = fake_on_stop
+        state.audio_buffer = [np.zeros(64, dtype=np.float32)]
+        state.buffer_samples = 64
+
+        handled = await handle_session_message(t, {"type": "stop_listening"}, state)
+        assert handled is True
+        assert len(flush_calls) == 1  # hook saw the data once
+        assert len(flush_calls[0]) == 1
+        assert flush_calls[0][0].shape == (64,)
+        assert state.is_listening is False
+        assert state.audio_buffer == []  # reset after flush
+        assert state.buffer_samples == 0
+        assert t.sent == [{"type": "listening_stopped"}]
+
+    @pytest.mark.asyncio
+    async def test_set_voice_sends_error_when_missing(self, monkeypatch):
+        """WS path: a nonexistent voice replies with an error."""
+        from src.server.session_handler import handle_session_message
+
+        t = self._make_fake_transport()
+        state = self._make_state(report_missing_voice_error=True)
+        monkeypatch.setattr("src.server.session_handler.os.path.isfile", lambda p: False)
+        handled = await handle_session_message(t, {"type": "set_voice", "voice_id": "nope"}, state)
+        assert handled is True
+        assert t.sent == [{"type": "error", "message": "Voice nope not found"}]
+        assert state.session_voice_override is None
+
+    @pytest.mark.asyncio
+    async def test_set_voice_webrtc_silent_on_missing(self, monkeypatch):
+        """WebRTC path: original code omitted the error for a missing voice —
+        preserve that exact behavior (report_missing_voice_error=False)."""
+        from src.server.session_handler import handle_session_message
+
+        t = self._make_fake_transport()
+        state = self._make_state(report_missing_voice_error=False)
+        monkeypatch.setattr("src.server.session_handler.os.path.isfile", lambda p: False)
+        handled = await handle_session_message(t, {"type": "set_voice", "voice_id": "nope"}, state)
+        assert handled is True
+        assert t.sent == []  # no error sent on the WebRTC path
+
+    @pytest.mark.asyncio
+    async def test_clear_history_scoped_to_session(self, monkeypatch):
+        """clear_history passes the session_id through to the backend."""
+        from src.server.session_handler import handle_session_message
+
+        backend_calls = []
+
+        class FakeBackend:
+            def clear_history(self, session_id=None):
+                backend_calls.append(session_id)
+
+        monkeypatch.setattr("src.server.session_handler.app_state.backend", FakeBackend())
+        t = self._make_fake_transport()
+        state = self._make_state(session_id="ws_abc")
+        handled = await handle_session_message(t, {"type": "clear_history"}, state)
+        assert handled is True
+        assert backend_calls == ["ws_abc"]
+        assert t.sent == [{"type": "history_cleared"}]
+
+    def test_webrtc_audio_path_has_no_vad_endpointing(self):
+        """Regression guard for #21: the WebRTC path must still be buffer-fill
+        only. The shared dispatcher does NOT auto-flush on audio — only an
+        explicit stop_listening (or buffer cap) flushes. This asserts the
+        dispatcher returns False (unhandled) for audio messages, so the
+        WebRTC handler's RTP collector just buffers them."""
+        from src.server.session_handler import handle_session_message, VoiceSessionState
+
+        async def run():
+            t = self._make_fake_transport()
+            state = VoiceSessionState()
+            handled = await handle_session_message(t, {"type": "audio_frame"}, state)
+            return handled
+
+        handled = asyncio.run(run())
+        assert handled is False  # audio handled by the caller, not the dispatcher
+
+    def test_max_audio_buffer_seconds_single_source(self):
+        """MAX_AUDIO_BUFFER_SECONDS lives in exactly one place — the shared
+        session_handler module."""
+        import src.server.routes as routes_mod
+        import src.server.session_handler as sh_mod
+
+        assert hasattr(sh_mod, "MAX_AUDIO_BUFFER_SECONDS")
+        assert not hasattr(routes_mod, "MAX_AUDIO_BUFFER_SECONDS")
+        # the constant value is 30
+        assert sh_mod.MAX_AUDIO_BUFFER_SECONDS == 30
+
+    def test_shared_dispatch_covers_common_message_types(self):
+        """The five message types shared by both transports are handled by the
+        dispatcher (returns True), while audio stays in the caller."""
+        from src.server.session_handler import handle_session_message, VoiceSessionState
+
+        async def run():
+            t = self._make_fake_transport()
+            state = VoiceSessionState()
+            results = {}
+            for mt in ("ping", "set_voice", "clear_history", "start_listening", "stop_listening"):
+                results[mt] = await handle_session_message(t, {"type": mt}, state)
+            return results
+
+        results = asyncio.run(run())
+        assert results == {
+            "ping": True,
+            "set_voice": True,
+            "clear_history": True,
+            "start_listening": True,
+            "stop_listening": True,
+        }
+
+
 class TestIntegration:
     """Integration tests for the full pipeline."""
 

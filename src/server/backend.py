@@ -206,6 +206,12 @@ def _load_voice_hint_config(path: str) -> Dict[str, Dict]:
                 f"Voice-hint config file '{path}': 'word_budget' for '{agent_id}' "
                 f"must be a positive integer, got {budget!r}"
             )
+        unknown = set(entry) - {"hint", "word_budget"}
+        if unknown:
+            logger.warning(
+                f"Voice-hint config file '{path}': ignoring unknown key(s) "
+                f"{sorted(unknown)} for agent '{agent_id}'"
+            )
         validated[agent_id] = {"hint": hint, "word_budget": budget}
     return validated
 

@@ -6,17 +6,19 @@ Signaling is done via a simple HTTP SDP exchange (POST /api/webrtc/offer).
 """
 
 import asyncio
+import fractions
 import json
 import uuid
 from typing import Optional
 
 import numpy as np
 from aiortc import (
+    MediaStreamTrack,
+    RTCDataChannel,
     RTCPeerConnection,
     RTCSessionDescription,
-    RTCDataChannel,
-    MediaStreamTrack,
 )
+from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 from loguru import logger
 
@@ -28,12 +30,19 @@ STUN_SERVERS = [{"urls": ["stun:stun.l.google.com:19302"]}]
 
 
 class AudioInputTrack(MediaStreamTrack):
-    """Receives incoming Opus audio and buffers decoded PCM frames."""
+    """Wraps the remote audio track, resampling decoded PCM to 16kHz.
+
+    ``recv()`` delegates to the wrapped remote track (the actual RTP
+    receiver). A background pump task continuously drains the remote track
+    and pushes resampled float32 PCM onto an internal queue that the session
+    collector drains via ``read_frame()``.
+    """
 
     kind = "audio"
 
-    def __init__(self, sample_rate: int = 16000):
+    def __init__(self, track: MediaStreamTrack, sample_rate: int = 16000):
         super().__init__()
+        self._track = track
         self._sample_rate = sample_rate
         self._queue: asyncio.Queue = asyncio.Queue()
         self._resampler = AudioResampler(
@@ -41,21 +50,35 @@ class AudioInputTrack(MediaStreamTrack):
             layout="mono",
             rate=sample_rate,
         )
+        self._pump_task = asyncio.ensure_future(self._pump())
+
+    async def _pump(self) -> None:
+        """Continuously read frames from the remote track into the queue."""
+        try:
+            while True:
+                frame = await self._track.recv()
+                resampled = self._resampler.resample(frame)
+                for f in resampled:
+                    raw = f.to_ndarray()
+                    pcm = int16_to_float32(raw.squeeze())
+                    self._queue.put_nowait(pcm.squeeze())
+        except asyncio.CancelledError:
+            pass
+        except (MediaStreamError, ConnectionError) as e:
+            logger.debug(f"AudioInputTrack pump stopped: {e}")
 
     async def recv(self):
-        frame = await super().recv()
-        resampled = self._resampler.resample(frame)
-        for f in resampled:
-            raw = f.to_ndarray()
-            pcm = int16_to_float32(raw.squeeze())
-            self._queue.put_nowait(pcm.squeeze())
-        return frame
+        return await self._track.recv()
 
     async def read_frame(self) -> Optional[np.ndarray]:
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=0.05)
         except asyncio.TimeoutError:
             return None
+
+    def stop(self) -> None:
+        self._pump_task.cancel()
+        super().stop()
 
 
 class AudioOutputTrack(MediaStreamTrack):
@@ -72,11 +95,16 @@ class AudioOutputTrack(MediaStreamTrack):
             layout="mono",
             rate=sample_rate,
         )
+        self._pts = 0
+        self._time_base = fractions.Fraction(1, sample_rate)
 
     async def push_pcm(self, pcm: np.ndarray, rate: int = 24000) -> None:
         pcm_s16 = float32_to_int16(pcm)
-        frame = AudioFrame.from_ndarray(pcm_s16, format="s16", layout="mono")
+        frame = AudioFrame.from_ndarray(pcm_s16.reshape(1, -1), format="s16", layout="mono")
         frame.sample_rate = rate
+        frame.pts = self._pts
+        frame.time_base = self._time_base
+        self._pts += len(pcm)
         await self._queue.put(frame)
 
     async def recv(self):
@@ -101,7 +129,6 @@ class WebRTCTransport(AudioTransport):
         self._audio_input: Optional[AudioInputTrack] = None
         self._audio_output: Optional[AudioOutputTrack] = None
         self._msg_queue: asyncio.Queue = asyncio.Queue()
-        self._connected = asyncio.Event()
         self._audio_buffer: list[np.ndarray] = []
 
         self._setup_handlers()
@@ -119,15 +146,10 @@ class WebRTCTransport(AudioTransport):
                 except json.JSONDecodeError:
                     logger.warning(f"WebRTC invalid JSON: {message[:100]}")
 
-            @channel.on("open")
-            def on_open():
-                self._connected.set()
-
         @self._pc.on("track")
         def on_track(track: MediaStreamTrack):
             if track.kind == "audio":
-                self._audio_input = AudioInputTrack()
-                self._pc.addTrack(self._audio_input)
+                self._audio_input = AudioInputTrack(track)
 
                 @track.on("ended")
                 def on_ended():
@@ -141,10 +163,15 @@ class WebRTCTransport(AudioTransport):
     async def handle_offer(self, offer_sdp: str) -> dict:
         """Accept an SDP offer and return the answer + session_id."""
         offer = RTCSessionDescription(sdp=offer_sdp, type="offer")
-        await self._pc.setRemoteDescription(offer)
 
+        # Add the output track BEFORE setRemoteDescription. Adding it inside
+        # on_track (which fires during setRemoteDescription) creates a
+        # transceiver that isn't in the offer, which makes createAnswer fail
+        # with a real aiortc client ("None is not in list").
         self._audio_output = AudioOutputTrack()
         self._pc.addTrack(self._audio_output)
+
+        await self._pc.setRemoteDescription(offer)
 
         answer = await self._pc.createAnswer()
         await self._pc.setLocalDescription(answer)
@@ -154,13 +181,6 @@ class WebRTCTransport(AudioTransport):
             "sdp": self._pc.localDescription.sdp,
             "type": "answer",
         }
-
-    async def wait_connected(self, timeout: float = 10.0) -> bool:
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout=timeout)
-            return True
-        except asyncio.TimeoutError:
-            return False
 
     # ── AudioTransport interface ─────────────────────────────────
 
@@ -187,6 +207,8 @@ class WebRTCTransport(AudioTransport):
             self._dc.send(json.dumps(data))
 
     async def close(self) -> None:
+        if self._audio_input is not None:
+            self._audio_input.stop()
         await self._pc.close()
 
     # ── Internal helpers ─────────────────────────────────────────

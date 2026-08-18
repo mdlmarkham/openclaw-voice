@@ -28,7 +28,7 @@ jobs:
         run: |
           uv venv
           source .venv/bin/activate
-          uv pip install -e ".[dev,stt]"
+          uv pip install -e ".[dev,stt,webrtc]"
 
       - name: Run unit tests
         run: |
@@ -41,6 +41,11 @@ jobs:
           pytest tests/test_server.py -v
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Run WebRTC end-to-end tests
+        run: |
+          source .venv/bin/activate
+          pytest tests/test_webrtc_e2e.py -v
 
   lint:
     runs-on: ubuntu-latest

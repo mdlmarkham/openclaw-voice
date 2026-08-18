@@ -760,15 +760,10 @@ async def webrtc_offer(body: dict, api_key: Optional[APIKey] = Depends(require_a
     result = await transport.handle_offer(body["sdp"])
     register_session(transport)
 
-    connected = await transport.wait_connected(timeout=15.0)
-    if not connected:
-        remove_session(transport._session_id)
-        await transport.close()
-        return JSONResponse(
-            status_code=504,
-            content={"error": "WebRTC connection timed out"},
-        )
-
+    # Start the session task immediately. We must NOT block on
+    # wait_connected() here: the client can only open the data channel
+    # (which is what wait_connected waits for) AFTER it receives this
+    # answer — waiting would deadlock the SDP exchange.
     asyncio.create_task(_run_webrtc_session(transport))
     return result
 
@@ -828,17 +823,20 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
         s.pipeline_task = asyncio.create_task(_run_pipeline(s.audio_buffer))
 
     async def _on_start_listening(s: VoiceSessionState) -> None:
-        """WebRTC-specific start_listening hook: start RTP collector."""
+        """WebRTC-specific start_listening hook: start RTP collector + VAD."""
         if transport._audio_input is not None and (
             s.rtp_collector_task is None or s.rtp_collector_task.done()
         ):
             s.rtp_collector_task = asyncio.create_task(_collect_rtp_audio())
+        s.vad_endpoint = build_vad_endpoint()
 
     async def _on_stop_listening(s: VoiceSessionState) -> None:
-        """WebRTC-specific stop_listening hook: cancel collector + dispatch."""
-        if s.rtp_collector_task is not None and not s.rtp_collector_task.done():
-            s.rtp_collector_task.cancel()
-            s.rtp_collector_task = None
+        """WebRTC-specific stop_listening hook: dispatch buffered audio.
+
+        The RTP collector is intentionally NOT cancelled here — it keeps
+        running so barge-in can detect speech during playback (issue #22).
+        The collector already idles (sleeps) when neither listening nor
+        playing, and is torn down at session end."""
         await _dispatch_pipeline(s)
 
     state.on_start_listening = _on_start_listening

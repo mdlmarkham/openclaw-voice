@@ -59,6 +59,20 @@ class TestServerHTTP:
         data = response.json()
         assert data["uptime_seconds"] >= 0
 
+    def test_audio_capture_processor_served(self, client):
+        """Test the AudioWorklet capture processor module is served."""
+        response = client.get("/audio-capture-processor.js")
+        assert response.status_code == 200
+        assert "AudioWorkletProcessor" in response.text
+        assert "registerProcessor" in response.text
+
+    def test_index_references_audio_worklet(self, client):
+        """Test the demo page loads the AudioWorklet capture processor."""
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "audioWorklet.addModule" in response.text
+        assert "audio-capture-processor.js" in response.text
+
 
 class TestServerWebSocket:
     """Test WebSocket functionality."""

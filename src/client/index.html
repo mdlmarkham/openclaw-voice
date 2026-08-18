@@ -1087,47 +1087,61 @@
                 }
                 
                 audioSource = audioContext.createMediaStreamSource(mediaStream);
-                audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
                 
                 let lastSoundTime = Date.now();
                 
-                audioProcessor.onaudioprocess = (e) => {
-                    if (isRecording && ws && ws.readyState === WebSocket.OPEN) {
-                        const rawAudio = e.inputBuffer.getChannelData(0);
-                        // Resample to 16kHz if Safari created context at different rate
-                        let audioData;
-                        if (audioContext.sampleRate !== 16000) {
-                            const ratio = 16000 / audioContext.sampleRate;
-                            const newLen = Math.round(rawAudio.length * ratio);
-                            audioData = new Float32Array(newLen);
-                            for (let i = 0; i < newLen; i++) {
-                                const srcIdx = i / ratio;
-                                const srcFloor = Math.floor(srcIdx);
-                                const srcCeil = Math.min(srcFloor + 1, rawAudio.length - 1);
-                                const frac = srcIdx - srcFloor;
-                                audioData[i] = rawAudio[srcFloor] * (1 - frac) + rawAudio[srcCeil] * frac;
-                            }
-                        } else {
-                            audioData = rawAudio;
+                const handleAudioChunk = (rawAudio) => {
+                    if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+                    // Resample to 16kHz if Safari created context at different rate
+                    let audioData;
+                    if (audioContext.sampleRate !== 16000) {
+                        const ratio = 16000 / audioContext.sampleRate;
+                        const newLen = Math.round(rawAudio.length * ratio);
+                        audioData = new Float32Array(newLen);
+                        for (let i = 0; i < newLen; i++) {
+                            const srcIdx = i / ratio;
+                            const srcFloor = Math.floor(srcIdx);
+                            const srcCeil = Math.min(srcFloor + 1, rawAudio.length - 1);
+                            const frac = srcIdx - srcFloor;
+                            audioData[i] = rawAudio[srcFloor] * (1 - frac) + rawAudio[srcCeil] * frac;
                         }
-                        const base64 = float32ToBase64(audioData);
-                        ws.send(JSON.stringify({ type: 'audio', data: base64 }));
+                    } else {
+                        audioData = rawAudio;
+                    }
+                    const base64 = float32ToBase64(audioData);
+                    ws.send(JSON.stringify({ type: 'audio', data: base64 }));
 
-                        // Feed waveform visualizer
-                        const rmsVal = Math.sqrt(rawAudio.reduce((s, v) => s + v * v, 0) / rawAudio.length);
-                        micLevel = micLevel * 0.6 + rmsVal * 10 * 0.4;  // Smoothed, scaled
-                        micLevel = Math.min(1, micLevel);  // Clamp
-                        
-                        if (continuousMode) {
-                            // RMS-based silence detection — less aggressive than raw energy
-                            if (rmsVal > 0.015) {
-                                lastSoundTime = Date.now();
-                            } else if (Date.now() - lastSoundTime > silenceThreshold) {
-                                stopRecording();
-                            }
+                    // Feed waveform visualizer
+                    const rmsVal = Math.sqrt(rawAudio.reduce((s, v) => s + v * v, 0) / rawAudio.length);
+                    micLevel = micLevel * 0.6 + rmsVal * 10 * 0.4;  // Smoothed, scaled
+                    micLevel = Math.min(1, micLevel);  // Clamp
+                    
+                    if (continuousMode) {
+                        // RMS-based silence detection — less aggressive than raw energy
+                        if (rmsVal > 0.015) {
+                            lastSoundTime = Date.now();
+                        } else if (Date.now() - lastSoundTime > silenceThreshold) {
+                            stopRecording();
                         }
                     }
                 };
+                
+                if (audioContext.audioWorklet && typeof audioContext.audioWorklet.addModule === 'function') {
+                    // AudioWorklet path — capture runs off the main thread
+                    const basePath = window.location.pathname.replace(/\/$/, '');
+                    const workletUrl = basePath ? `${basePath}/audio-capture-processor.js` : '/audio-capture-processor.js';
+                    await audioContext.audioWorklet.addModule(workletUrl);
+                    audioProcessor = new AudioWorkletNode(audioContext, 'audio-capture-processor');
+                    audioProcessor.port.onmessage = (e) => {
+                        handleAudioChunk(e.data);
+                    };
+                } else {
+                    // Fallback: deprecated ScriptProcessorNode (browsers without AudioWorklet)
+                    audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                    audioProcessor.onaudioprocess = (e) => {
+                        handleAudioChunk(e.inputBuffer.getChannelData(0));
+                    };
+                }
                 
                 audioSource.connect(audioProcessor);
                 audioProcessor.connect(audioContext.destination);

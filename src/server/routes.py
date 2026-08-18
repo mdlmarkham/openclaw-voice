@@ -161,6 +161,20 @@ async def favicon():
     return FileResponse(Path(__file__).resolve().parent.parent / "client" / "favicon.svg")
 
 
+@router.get("/audio-capture-processor.js")
+@router.get("/voice/audio-capture-processor.js")
+async def audio_capture_processor():
+    """Serve the AudioWorklet capture processor module."""
+    response = FileResponse(
+        Path(__file__).resolve().parent.parent / "client" / "audio-capture-processor.js",
+        media_type="application/javascript",
+    )
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 @router.get("/health")
 async def health():
     """Health check — used by monitoring and client auto-reconnect."""

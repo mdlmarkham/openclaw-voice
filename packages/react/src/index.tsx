@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { AUDIO_CAPTURE_PROCESSOR_SOURCE } from './audio-capture-processor';
 
 export interface VoiceWidgetProps {
   /** WebSocket server URL (e.g., wss://voice.example.com/ws) */
@@ -69,7 +70,7 @@ export function VoiceWidget({
   const captureCtxRef = useRef<AudioContext | null>(null);
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const processorRef = useRef<AudioWorkletNode | ScriptProcessorNode | null>(null);
   const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextStartTimeRef = useRef(0);
   const continuousRef = useRef(continuousMode);
@@ -215,18 +216,40 @@ export function VoiceWidget({
       captureCtxRef.current = new AudioContext({ sampleRate: 16000 });
 
       const source = captureCtxRef.current.createMediaStreamSource(stream);
-      const processor = captureCtxRef.current.createScriptProcessor(4096, 1, 1);
 
-      processor.onaudioprocess = (e: AudioProcessingEvent) => {
+      const handleAudioChunk = (rawAudio: Float32Array) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-          const audioData = e.inputBuffer.getChannelData(0);
-          wsRef.current.send(JSON.stringify({ type: 'audio', data: float32ToBase64(audioData) }));
+          wsRef.current.send(JSON.stringify({ type: 'audio', data: float32ToBase64(rawAudio) }));
         }
       };
 
-      source.connect(processor);
-      processor.connect(captureCtxRef.current.destination);
-      processorRef.current = processor;
+      if (captureCtxRef.current.audioWorklet && typeof captureCtxRef.current.audioWorklet.addModule === 'function') {
+        // AudioWorklet path — capture runs off the main thread.
+        // Load the processor from a Blob URL (npm package portability).
+        const blob = new Blob([AUDIO_CAPTURE_PROCESSOR_SOURCE], { type: 'application/javascript' });
+        const workletUrl = URL.createObjectURL(blob);
+        try {
+          await captureCtxRef.current.audioWorklet.addModule(workletUrl);
+          const processor = new AudioWorkletNode(captureCtxRef.current, 'audio-capture-processor');
+          processor.port.onmessage = (e: MessageEvent) => {
+            handleAudioChunk(e.data as Float32Array);
+          };
+          source.connect(processor);
+          processor.connect(captureCtxRef.current.destination);
+          processorRef.current = processor;
+        } finally {
+          URL.revokeObjectURL(workletUrl);
+        }
+      } else {
+        // Fallback: deprecated ScriptProcessorNode (browsers without AudioWorklet)
+        const processor = captureCtxRef.current.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (e: AudioProcessingEvent) => {
+          handleAudioChunk(e.inputBuffer.getChannelData(0));
+        };
+        source.connect(processor);
+        processor.connect(captureCtxRef.current.destination);
+        processorRef.current = processor;
+      }
 
       wsRef.current.send(JSON.stringify({ type: 'start_listening' }));
 

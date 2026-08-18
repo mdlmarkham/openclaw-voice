@@ -48,8 +48,20 @@ def _start_server(port: int):
 
 
 def main() -> int:
+    import argparse
     import http.server
     import socketserver
+
+    parser = argparse.ArgumentParser(
+        description="Verify the React widget's AudioWorklet capture path."
+    )
+    parser.add_argument(
+        "--fallback",
+        action="store_true",
+        help="Force the ScriptProcessorNode fallback path (AudioWorklet disabled) "
+        "and assert the round-trip still works.",
+    )
+    args = parser.parse_args()
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *args):
@@ -154,6 +166,24 @@ document.title = 'widget=' + (typeof window.__VoiceWidget);
                 }
                 """
             )
+            if args.fallback:
+                # Force the ScriptProcessorNode fallback path.
+                page.add_init_script(
+                    """
+                    window.__awWorkletUsed = false;
+                    Object.defineProperty(window, 'AudioWorkletNode', { value: undefined });
+                    if (window.AudioContext) {
+                        Object.defineProperty(window.AudioContext.prototype, 'audioWorklet', {
+                            get: function () { return undefined; },
+                        });
+                    }
+                    if (window.webkitAudioContext) {
+                        Object.defineProperty(window.webkitAudioContext.prototype, 'audioWorklet', {
+                            get: function () { return undefined; },
+                        });
+                    }
+                    """
+                )
             page.on("console", lambda m: console_msgs.append((m.type, m.text)))
             page.on("pageerror", lambda e: console_msgs.append(("pageerror", str(e))))
 
@@ -214,8 +244,14 @@ document.title = 'widget=' + (typeof window.__VoiceWidget);
             print(f"AudioWorkletNode supported: {aw}")
             print(f"AudioWorklet capture node used: {aw_used}")
 
-            if missing or deprecations or not aw or not aw_used:
-                failures += 1
+            if args.fallback:
+                # Fallback mode: round-trip must work and the worklet must NOT
+                # have been used.
+                if missing or aw_used:
+                    failures += 1
+            else:
+                if missing or deprecations or not aw or not aw_used:
+                    failures += 1
 
             browser.close()
 

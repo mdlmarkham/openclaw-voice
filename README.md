@@ -71,6 +71,48 @@ PYTHONPATH=. python -m uvicorn src.server.main:app --host 0.0.0.0 --port 8765
 | `OPENCLAW_VOICE_MODEL_DEEPTHOUGHT` | No | — | Per-agent override for DeepThought |
 | `OPENCLAW_VOICE_MODEL_MARA` | No | — | Per-agent override for Mara |
 
+### Per-Agent Voice Hints
+
+Each agent's voice-modality system hint (how it speaks — tone, word budget,
+formatting rules) is configurable at runtime without a code change. Hints
+resolve in this order:
+
+1. **Environment variable** — `VOICE_HINT_<AGENT>` (e.g. `VOICE_HINT_METIS`),
+   for quick overrides without touching files. Uppercase agent id, `-` → `_`.
+2. **Config file** — a JSON or YAML file (path via `VOICE_HINT_CONFIG`, default
+   `./voice_hints.json` if present) with a top-level map of agent id → object.
+3. **Built-in default** — the hardcoded hints in `AGENT_VOICE_CONFIG`
+   (`src/server/backend.py`).
+
+Config file schema:
+
+```json
+{
+  "metis": {
+    "hint": "You are speaking through a voice interface. Be curious and probing.",
+    "word_budget": 50
+  },
+  "atlas": {
+    "hint": "You are speaking through a voice interface. Be direct and decisive."
+  }
+}
+```
+
+- `hint`: the full system-message text (replaces the built-in for that agent).
+- `word_budget`: optional positive integer; injects a "keep it under N words"
+  clause into the hint at build time, so budgets stay tunable without editing
+  the prose. If absent, the hint is used verbatim.
+
+Validation: a configured-but-malformed file (bad JSON/YAML, wrong types, a
+non-positive `word_budget`) fails fast at startup with an error naming the file
+and offending key. Unknown keys are ignored (forward compatible). Env overrides
+are validated at call time.
+
+> **Note:** These hints shape how every agent speaks — they are the single most
+> impactful lever on voice UX. When tuning, keep the "assess interest" gate in
+> mind: hints that ask the agent to probe and ask follow-up questions drive the
+> conversational behavior the voice interface is designed around.
+
 > **OpenClaw gateway mode (recommended):** Set `OPENCLAW_GATEWAY_URL` and `OPENCLAW_GATEWAY_TOKEN`. The server sends only the user message to the gateway — no conversation history duplication. The gateway maintains full agent persona, memory, and workspace context, giving you seamless continuity between voice and text channels.
 >
 > **Direct OpenAI mode:** Set `OPENAI_API_KEY`. The server manages its own conversation history (last 10 turns). Note: conversation state is global — shared across all connected clients. For multi-user deployments, use the OpenClaw gateway.

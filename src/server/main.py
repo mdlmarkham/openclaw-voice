@@ -57,6 +57,21 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Authentication DISABLED (dev mode)")
 
+    # Validate voice-hint config at startup so a bad config fails fast
+    # instead of silently shipping a broken voice experience (issue #33).
+    from .backend import _get_voice_hint_config
+
+    try:
+        voice_hint_cfg = _get_voice_hint_config()
+        if voice_hint_cfg:
+            logger.info(
+                f"🎙️ Voice-hint config loaded: {len(voice_hint_cfg)} agent(s) "
+                f"({', '.join(sorted(voice_hint_cfg))})"
+            )
+    except ValueError as e:
+        logger.error(f"❌ Invalid voice-hint config: {e}")
+        raise
+
     state.stt_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
     state.tts_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts")
     state.vad_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vad")

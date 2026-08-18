@@ -12,7 +12,10 @@ cross-session interleaving.
 """
 
 import asyncio
+import json
+import os
 import time
+from pathlib import Path
 from typing import Optional, List, Dict, AsyncGenerator
 
 from loguru import logger
@@ -116,6 +119,153 @@ DEFAULT_VOICE_HINT = (
     "Avoid markdown, URLs, or visual formatting — everything will be spoken aloud. "
     "Be warm, direct, and associative."
 )
+
+# ── Configurable per-agent voice hints (issue #33) ──────────────────
+#
+# Hints resolve in this order:
+#   1. Environment variable  VOICE_HINT_<AGENT>  (e.g. VOICE_HINT_METIS)
+#   2. Config file (path via VOICE_HINT_CONFIG env, default ./voice_hints.json)
+#   3. Built-in AGENT_VOICE_CONFIG hints
+#   4. DEFAULT_VOICE_HINT
+#
+# Config file schema (JSON or YAML):
+#   {
+#     "metis": { "hint": "...", "word_budget": 50 },
+#     "atlas": { "hint": "..." }
+#   }
+# - "hint": full system-message text (replaces the built-in for that agent).
+# - "word_budget": optional positive int; injects a "keep it under N words"
+#   clause into the hint at build time so budgets stay tunable without
+#   editing the prose. If absent, the hint is used verbatim.
+
+VOICE_HINT_CONFIG_ENV = "VOICE_HINT_CONFIG"
+VOICE_HINT_CONFIG_DEFAULT = "voice_hints.json"
+
+_voice_hint_config: Optional[Dict[str, Dict]] = None
+_voice_hint_config_path: Optional[str] = None
+
+
+def _voice_hint_config_path_from_env() -> Optional[str]:
+    """Return the config file path from VOICE_HINT_CONFIG, or None if unset."""
+    return os.environ.get(VOICE_HINT_CONFIG_ENV)
+
+
+def _load_voice_hint_config(path: str) -> Dict[str, Dict]:
+    """Parse and validate a voice-hint config file.
+
+    Raises ValueError with a clear message naming the file and offending key
+    on malformed JSON/YAML or wrong types, so a bad config can't silently
+    ship a broken voice experience. Unknown keys are ignored (forward
+    compatible).
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise ValueError(f"VOICE_HINT_CONFIG points to '{path}' but no such file exists")
+    import yaml
+
+    try:
+        raw = p.read_text(encoding="utf-8")
+        if p.suffix.lower() in (".yaml", ".yml"):
+            data = yaml.safe_load(raw)
+        else:
+            data = json.loads(raw)
+    except (json.JSONDecodeError, yaml.YAMLError) as e:
+        raise ValueError(f"Malformed voice-hint config file '{path}': {e}") from e
+
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Voice-hint config file '{path}' must be a JSON/YAML object mapping "
+            f"agent ids to objects, got {type(data).__name__}"
+        )
+
+    validated: Dict[str, Dict] = {}
+    for agent_id, entry in data.items():
+        if not isinstance(agent_id, str):
+            raise ValueError(
+                f"Voice-hint config file '{path}': agent id must be a string, "
+                f"got {type(agent_id).__name__}"
+            )
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Voice-hint config file '{path}': entry for '{agent_id}' must be "
+                f"an object, got {type(entry).__name__}"
+            )
+        hint = entry.get("hint")
+        if not isinstance(hint, str) or not hint.strip():
+            raise ValueError(
+                f"Voice-hint config file '{path}': entry for '{agent_id}' must have "
+                f"a non-empty string 'hint'"
+            )
+        budget = entry.get("word_budget")
+        if budget is not None and (
+            not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0
+        ):
+            raise ValueError(
+                f"Voice-hint config file '{path}': 'word_budget' for '{agent_id}' "
+                f"must be a positive integer, got {budget!r}"
+            )
+        validated[agent_id] = {"hint": hint, "word_budget": budget}
+    return validated
+
+
+def _get_voice_hint_config() -> Dict[str, Dict]:
+    """Load (and cache) the voice-hint config file, if any.
+
+    Returns {} when no config file is configured or present. Raises ValueError
+    on a configured-but-malformed file (fail fast at startup).
+    """
+    global _voice_hint_config, _voice_hint_config_path
+    path = _voice_hint_config_path_from_env()
+    if path is None:
+        default = Path(VOICE_HINT_CONFIG_DEFAULT)
+        if default.is_file():
+            path = str(default)
+        else:
+            return {}
+    if _voice_hint_config is not None and _voice_hint_config_path == path:
+        return _voice_hint_config
+    _voice_hint_config = _load_voice_hint_config(path)
+    _voice_hint_config_path = path
+    return _voice_hint_config
+
+
+def _apply_word_budget(hint: str, word_budget: Optional[int]) -> str:
+    """Inject a word-budget clause into a hint, if a budget is configured."""
+    if word_budget is None:
+        return hint
+    clause = f"Keep responses under {word_budget} words unless more detail is needed."
+    if "under " in hint and " words" in hint:
+        return hint
+    return f"{hint} {clause}"
+
+
+def resolve_voice_hint(agent_id: Optional[str]) -> str:
+    """Resolve the voice-modality system hint for an agent.
+
+    Priority: env override > config file > built-in AGENT_VOICE_CONFIG >
+    DEFAULT_VOICE_HINT. Env overrides are validated at call time (cheap
+    string check).
+    """
+    agent = agent_id or "metis"
+    env_key = f"VOICE_HINT_{agent.upper().replace('-', '_')}"
+    env_hint = os.environ.get(env_key)
+    if env_hint is not None:
+        if not env_hint.strip():
+            logger.warning(f"{env_key} is empty; ignoring env override")
+        else:
+            return env_hint
+
+    cfg = _get_voice_hint_config().get(agent)
+    if cfg is not None:
+        return _apply_word_budget(cfg["hint"], cfg.get("word_budget"))
+
+    builtin = AGENT_VOICE_CONFIG.get(agent, {}).get("hint")
+    if builtin:
+        return builtin
+    return DEFAULT_VOICE_HINT
+
 
 # Full system prompt for direct OpenAI mode (no gateway memory)
 FULL_SYSTEM_PROMPT = (
@@ -321,8 +471,7 @@ class AIBackend:
         is_openclaw = self.backend_type == "openclaw"
 
         if is_openclaw:
-            cfg = AGENT_VOICE_CONFIG.get(agent_hint, {})
-            voice_hint = cfg.get("hint", DEFAULT_VOICE_HINT)
+            voice_hint = resolve_voice_hint(agent_hint)
             messages: list[dict] = [{"role": "system", "content": voice_hint}]
             if reconnect:
                 messages.append(

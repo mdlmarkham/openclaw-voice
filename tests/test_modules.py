@@ -461,6 +461,187 @@ class TestOpenClawModelResolution:
         assert backend._resolve_model("atlas") == "gpt-4o-mini"
 
 
+class TestVoiceHintResolution:
+    """Tests for issue #33: configurable per-agent voice hints.
+
+    Hints resolve in order: env override (VOICE_HINT_<AGENT>) > config file
+    (VOICE_HINT_CONFIG) > built-in AGENT_VOICE_CONFIG > DEFAULT_VOICE_HINT.
+    """
+
+    def _reset_config_cache(self, monkeypatch):
+        """Clear the module-level config cache between tests."""
+        import src.server.backend as backend_mod
+
+        monkeypatch.setattr(backend_mod, "_voice_hint_config", None)
+        monkeypatch.setattr(backend_mod, "_voice_hint_config_path", None)
+
+    def test_env_override_wins_over_file_and_default(self, monkeypatch, tmp_path):
+        """VOICE_HINT_METIS env var beats a config file and the built-in."""
+        from src.server.backend import resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text('{"metis": {"hint": "file hint"}}', encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        monkeypatch.setenv("VOICE_HINT_METIS", "env hint")
+        assert resolve_voice_hint("metis") == "env hint"
+
+    def test_file_wins_over_default(self, monkeypatch, tmp_path):
+        """A config-file hint beats the built-in default."""
+        from src.server.backend import resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text('{"atlas": {"hint": "file hint"}}', encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        assert resolve_voice_hint("atlas") == "file hint"
+
+    def test_builtin_used_when_nothing_configured(self, monkeypatch):
+        """With no env or file config, the built-in AGENT_VOICE_CONFIG hint is used."""
+        from src.server.backend import AGENT_VOICE_CONFIG, resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        monkeypatch.delenv("VOICE_HINT_METIS", raising=False)
+        monkeypatch.delenv("VOICE_HINT_CONFIG", raising=False)
+        assert resolve_voice_hint("metis") == AGENT_VOICE_CONFIG["metis"]["hint"]
+
+    def test_unknown_agent_uses_default(self, monkeypatch):
+        """An agent not in the built-in map falls back to DEFAULT_VOICE_HINT."""
+        from src.server.backend import DEFAULT_VOICE_HINT, resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        monkeypatch.delenv("VOICE_HINT_CONFIG", raising=False)
+        monkeypatch.delenv("VOICE_HINT_UNKNOWN", raising=False)
+        assert resolve_voice_hint("unknown-agent") == DEFAULT_VOICE_HINT
+
+    def test_none_agent_defaults_to_metis(self, monkeypatch):
+        """agent_id=None resolves as 'metis' (matches resolve_openclaw_model)."""
+        from src.server.backend import AGENT_VOICE_CONFIG, resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        monkeypatch.delenv("VOICE_HINT_METIS", raising=False)
+        monkeypatch.delenv("VOICE_HINT_CONFIG", raising=False)
+        assert resolve_voice_hint(None) == AGENT_VOICE_CONFIG["metis"]["hint"]
+
+    def test_word_budget_injects_clause(self, monkeypatch, tmp_path):
+        """A word_budget in the config file injects a budget clause into the hint."""
+        from src.server.backend import resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text('{"metis": {"hint": "Be brief.", "word_budget": 30}}', encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        hint = resolve_voice_hint("metis")
+        assert "under 30 words" in hint
+        assert "Be brief." in hint
+
+    def test_word_budget_absent_uses_hint_verbatim(self, monkeypatch, tmp_path):
+        """Without a word_budget, the hint is used verbatim (no clause added)."""
+        from src.server.backend import resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text('{"metis": {"hint": "Exact text."}}', encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        assert resolve_voice_hint("metis") == "Exact text."
+
+    def test_yaml_config_supported(self, monkeypatch, tmp_path):
+        """A YAML config file is parsed the same as JSON."""
+        from src.server.backend import resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.yaml"
+        cfg.write_text("metis:\n  hint: yaml hint\n", encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        assert resolve_voice_hint("metis") == "yaml hint"
+
+    def test_malformed_json_raises_clear_error(self, monkeypatch, tmp_path):
+        """Malformed JSON fails fast with an error naming the file."""
+        from src.server.backend import _get_voice_hint_config
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text("{ not valid json", encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        with pytest.raises(ValueError, match="Malformed voice-hint config file"):
+            _get_voice_hint_config()
+
+    def test_wrong_type_raises_clear_error(self, monkeypatch, tmp_path):
+        """A non-object entry fails fast naming the offending agent."""
+        from src.server.backend import _get_voice_hint_config
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text('{"metis": "just a string"}', encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        with pytest.raises(ValueError, match="'metis'"):
+            _get_voice_hint_config()
+
+    def test_bad_word_budget_raises_clear_error(self, monkeypatch, tmp_path):
+        """A non-positive word_budget fails fast."""
+        from src.server.backend import _get_voice_hint_config
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text('{"metis": {"hint": "hi", "word_budget": -5}}', encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        with pytest.raises(ValueError, match="word_budget"):
+            _get_voice_hint_config()
+
+    def test_missing_configured_file_raises(self, monkeypatch, tmp_path):
+        """VOICE_HINT_CONFIG pointing at a nonexistent file fails fast."""
+        from src.server.backend import _get_voice_hint_config
+
+        self._reset_config_cache(monkeypatch)
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(tmp_path / "nope.json"))
+        with pytest.raises(ValueError, match="no such file"):
+            _get_voice_hint_config()
+
+    def test_unknown_keys_are_ignored(self, monkeypatch, tmp_path):
+        """Unknown keys in the config file are ignored (forward compatible)."""
+        from src.server.backend import resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text(
+            '{"metis": {"hint": "known", "future_field": 1}, "future_agent": {"hint": "x"}}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        assert resolve_voice_hint("metis") == "known"
+
+    def test_default_config_file_used_when_present(self, monkeypatch, tmp_path):
+        """A ./voice_hints.json in the working dir is picked up without VOICE_HINT_CONFIG."""
+        from src.server.backend import resolve_voice_hint
+
+        self._reset_config_cache(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "voice_hints.json").write_text(
+            '{"metis": {"hint": "default file hint"}}', encoding="utf-8"
+        )
+        assert resolve_voice_hint("metis") == "default file hint"
+
+    @pytest.mark.asyncio
+    async def test_build_messages_uses_resolved_hint(self, monkeypatch, tmp_path):
+        """_build_messages must use the resolved hint (env > file > default)."""
+        from src.server.backend import AIBackend
+
+        self._reset_config_cache(monkeypatch)
+        cfg = tmp_path / "hints.json"
+        cfg.write_text('{"atlas": {"hint": "resolved file hint"}}', encoding="utf-8")
+        monkeypatch.setenv("VOICE_HINT_CONFIG", str(cfg))
+        backend = AIBackend(
+            backend_type="openclaw",
+            url="https://fake-gateway.example/v1",
+            api_key="fake",
+            system_prompt="",
+        )
+        msgs, is_openclaw = await backend._build_messages("hello", agent_hint="atlas")
+        assert is_openclaw is True
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"] == "resolved file hint"
+
+
 class TestVAD:
     """Tests for Voice Activity Detection module."""
 

@@ -2,9 +2,10 @@
 Shared session message dispatch for WebSocket and WebRTC voice sessions.
 
 Extracts the duplicated message-handling logic between ``websocket_endpoint``
-and ``_run_webrtc_session`` in ``routes.py`` (issue #21).  Pure dedup —
-zero behavior change.  Transport-specific audio handling (WS VAD/barge-in,
-WebRTC RTP collector/overflow) stays in the callers via hooks.
+and ``_run_webrtc_session`` in ``routes.py`` (issue #21), and extends the
+shared audio path with VAD auto-endpointing + barge-in for BOTH transports
+(issue #22).  Transport-specific glue (WS keepalive, WebRTC RTP collector
+wiring) stays in the callers via hooks.
 """
 
 import asyncio
@@ -53,7 +54,6 @@ class VoiceSessionState:
 
     # WebRTC-specific
     rtp_collector_task: Optional[asyncio.Task] = None
-    buffer_overflow: Optional[asyncio.Event] = None
 
     # Behavior flags
     # WebRTC's original set_voice omitted the "voice not found" error; the
@@ -63,6 +63,10 @@ class VoiceSessionState:
     # Transport-specific hooks (called at the right point in start/stop)
     on_start_listening: Optional[Callable[["VoiceSessionState"], Awaitable[None]]] = None
     on_stop_listening: Optional[Callable[["VoiceSessionState"], Awaitable[None]]] = None
+    # Dispatch the buffered audio through the pipeline as a cancelable task.
+    # The hook owns any rate-limiting (WS) and stores the task on
+    # ``state.pipeline_task`` so a later barge-in can cancel it (issue #22).
+    dispatch_pipeline: Optional[Callable[["VoiceSessionState"], Awaitable[None]]] = None
 
 
 def max_audio_buffer_samples() -> int:
@@ -130,6 +134,86 @@ def build_vad_endpoint() -> Optional[VADEndpoint]:
         ),
         sample_rate=settings.sample_rate,
     )
+
+
+def build_barge_in_vad() -> Optional[VADEndpoint]:
+    """Construct a lightweight VADEndpoint for barge-in detection.
+
+    Detects speech quickly (min_speech_frames=1) so playback is interrupted
+    as soon as the user starts talking.
+    """
+    if not settings.vad_enabled or app_state.vad is None:
+        return None
+    return VADEndpoint(
+        app_state.vad,
+        threshold=settings.vad_threshold,
+        min_speech_frames=1,
+        sample_rate=settings.sample_rate,
+    )
+
+
+async def handle_audio_samples(
+    transport: AudioTransport,
+    state: VoiceSessionState,
+    audio_np: np.ndarray,
+    max_samples: int,
+    *,
+    log_prefix: str = "",
+) -> None:
+    """Process one decoded audio chunk for BOTH transports (issue #22).
+
+    Combines what the WS handler already did (buffer append + cap, VAD
+    auto-endpointing, barge-in) into a single helper so WebRTC gets the same
+    behavior.  The caller owns base64 decode; this operates on an
+    already-decoded ``np.ndarray``.
+
+    - Buffers audio, force-flushing (via ``state.dispatch_pipeline``) when
+      the 30s cap is hit.
+    - Runs VAD endpointing to auto-stop on ``speech_end`` — no explicit
+      ``stop_listening`` needed.
+    - Detects barge-in while playing (``state.is_playing``), cancels the
+      in-flight pipeline task, and resumes listening.
+    - Emits ``vad_status`` for client visual feedback.
+    """
+    if len(audio_np) == 0:
+        return
+
+    if state.is_listening:
+        if append_audio_samples(state, audio_np, max_samples):
+            logger.warning(f"{log_prefix}Audio buffer cap reached, processing now")
+            state.vad_endpoint = None
+            if state.dispatch_pipeline is not None:
+                await state.dispatch_pipeline(state)
+            reset_buffer(state)
+
+        if state.vad_endpoint is not None:
+            event = await state.vad_endpoint.process_async(audio_np)
+            if event == "speech_end":
+                logger.debug("VAD endpoint: speech ended, processing buffer")
+                state.vad_endpoint = None
+                if state.dispatch_pipeline is not None:
+                    await state.dispatch_pipeline(state)
+                reset_buffer(state)
+
+        if app_state.vad is not None:
+            has_speech = await app_state.vad.is_speech_async(audio_np)
+            await transport.send_json({"type": "vad_status", "speech_detected": has_speech})
+
+    elif state.is_playing:
+        if state.barge_in_vad is None:
+            state.barge_in_vad = build_barge_in_vad()
+        if state.barge_in_vad is not None:
+            event = await state.barge_in_vad.process_async(audio_np)
+            if event == "speech_start":
+                logger.info("Barge-in: user started speaking during playback")
+                if state.pipeline_task is not None and not state.pipeline_task.done():
+                    state.pipeline_task.cancel()
+                    state.pipeline_task = None
+                state.barge_in_vad = None
+                state.is_listening = True
+                reset_buffer(state)
+                state.vad_endpoint = build_vad_endpoint()
+                await transport.send_json({"type": "listening_started"})
 
 
 async def handle_session_message(

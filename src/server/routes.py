@@ -25,17 +25,15 @@ from .config import VOICES_DIR, settings
 from .session import SessionContext
 from .session_handler import (
     VoiceSessionState,
-    append_audio_samples,
     build_vad_endpoint,
+    handle_audio_samples,
     handle_session_message,
     make_session_context,
     max_audio_buffer_samples,
-    reset_buffer,
 )
 from . import state as app_state
 from .text_utils import sanitize_tts_symbols
 from .transport import WebSocketTransport
-from .vad import VADEndpoint
 
 # ── REST API session store ──────────────────────────────────────────
 # Persists conversation history between /api/chat calls for iOS Shortcuts
@@ -676,8 +674,18 @@ async def websocket_endpoint(websocket: WebSocket):
             session = make_session_context(s)
             s.pipeline_task = asyncio.create_task(_run_pipeline(s.audio_buffer, session))
 
+    async def _dispatch_pipeline(s: VoiceSessionState) -> None:
+        """Dispatch the current buffer to the pipeline as a cancelable task
+        (shared cap-flush / VAD auto-stop / barge-in entry point)."""
+        if api_key is not None and not await token_manager.check_rate_limit(api_key):
+            await transport.send_json({"type": "error", "message": "rate_limited"})
+            return
+        session = make_session_context(s)
+        s.pipeline_task = asyncio.create_task(_run_pipeline(s.audio_buffer, session))
+
     state.on_start_listening = _on_start_listening
     state.on_stop_listening = _on_stop_listening
+    state.dispatch_pipeline = _dispatch_pipeline
 
     try:
         while True:
@@ -687,97 +695,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
             msg_type = msg.get("type")
 
-            if msg_type == "audio" and state.is_listening:
+            if msg_type == "audio":
                 try:
                     audio_bytes = base64.b64decode(msg["data"])
                     audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
-
-                    if append_audio_samples(state, audio_np, MAX_AUDIO_BUFFER_SAMPLES):
-                        logger.warning(
-                            f"Audio buffer cap reached ({state.buffer_samples} samples), processing now"
-                        )
-                        state.vad_endpoint = None
-                        if api_key is not None and not await token_manager.check_rate_limit(
-                            api_key
-                        ):
-                            await transport.send_json({"type": "error", "message": "rate_limited"})
-                        else:
-                            session = make_session_context(state)
-                            state.pipeline_task = asyncio.create_task(
-                                _run_pipeline(state.audio_buffer, session)
-                            )
-                        reset_buffer(state)
-
-                    # VAD endpointing: detect speech start/end
-                    if state.vad_endpoint is not None and len(audio_np) > 0:
-                        event = await state.vad_endpoint.process_async(audio_np)
-                        if event == "speech_end":
-                            logger.debug("VAD endpoint: speech ended, processing buffer")
-                            state.vad_endpoint = None
-                            if api_key is not None and not await token_manager.check_rate_limit(
-                                api_key
-                            ):
-                                await transport.send_json(
-                                    {"type": "error", "message": "rate_limited"}
-                                )
-                            else:
-                                session = make_session_context(state)
-                                state.pipeline_task = asyncio.create_task(
-                                    _run_pipeline(state.audio_buffer, session)
-                                )
-                            reset_buffer(state)
-
-                    # VAD status for client visual feedback
-                    if app_state.vad is not None and len(audio_np) > 0:
-                        has_speech = await app_state.vad.is_speech_async(audio_np)
-                        await transport.send_json(
-                            {
-                                "type": "vad_status",
-                                "speech_detected": has_speech,
-                            }
-                        )
+                    await handle_audio_samples(transport, state, audio_np, MAX_AUDIO_BUFFER_SAMPLES)
                 except Exception as audio_err:
                     logger.warning(f"Audio decode error: {audio_err}")
-
-            # Barge-in: detect speech during playback
-            elif msg_type == "audio" and state.is_playing:
-                try:
-                    audio_bytes = base64.b64decode(msg["data"])
-                    audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
-
-                    if state.barge_in_vad is None and app_state.vad is not None:
-                        state.barge_in_vad = VADEndpoint(
-                            app_state.vad,
-                            threshold=settings.vad_threshold,
-                            min_speech_frames=1,
-                            sample_rate=settings.sample_rate,
-                        )
-                    if state.barge_in_vad is not None:
-                        event = await state.barge_in_vad.process_async(audio_np)
-                        if event == "speech_start":
-                            logger.info("Barge-in: user started speaking during playback")
-                            if state.pipeline_task is not None and not state.pipeline_task.done():
-                                state.pipeline_task.cancel()
-                                state.pipeline_task = None
-                            state.barge_in_vad = None
-                            state.is_listening = True
-                            reset_buffer(state)
-                            if settings.vad_enabled and app_state.vad is not None:
-                                state.vad_endpoint = VADEndpoint(
-                                    app_state.vad,
-                                    threshold=settings.vad_threshold,
-                                    min_silence_frames=max(
-                                        1,
-                                        settings.vad_silence_duration_ms
-                                        * settings.sample_rate
-                                        // settings.vad_frame_size
-                                        // 1000,
-                                    ),
-                                    sample_rate=settings.sample_rate,
-                                )
-                            await transport.send_json({"type": "listening_started"})
-                except Exception:
-                    pass
 
             elif msg_type in (
                 "start_listening",
@@ -846,52 +770,66 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
         log_prefix=f"[webrtc:{session_id}] ",
         report_missing_voice_error=False,
     )
-    state.buffer_overflow = asyncio.Event()
 
-    async def _dispatch_pipeline_inline(buf: list[np.ndarray]) -> None:
-        """Run the pipeline inline, streaming events as they arrive (WebRTC)."""
-        if app_state.pipeline is not None:
-            session = make_session_context(state)
-            async for event in app_state.pipeline.process_audio(buf, session):
-                await transport.send_event(event)
+    async def _run_pipeline(buf: list[np.ndarray]) -> None:
+        """Run the voice pipeline in a background task."""
+        state.is_playing = True
+        try:
+            if app_state.pipeline is not None:
+                session = make_session_context(state)
+                async for event in app_state.pipeline.process_audio(buf, session):
+                    await transport.send_event(event)
+        except asyncio.CancelledError:
+            logger.debug(f"{state.log_prefix}Pipeline cancelled (barge-in or disconnect)")
+            try:
+                await transport.send_json({"type": "interrupt"})
+            except Exception:
+                pass
+            raise
+        finally:
+            state.is_playing = False
 
     async def _collect_rtp_audio():
-        """Background task: read PCM frames from WebRTC audio track."""
+        """Background task: read PCM frames from WebRTC audio track.
+
+        Feeds every frame through the shared ``handle_audio_samples`` so the
+        WebRTC path gets the same VAD auto-endpointing and barge-in as the
+        WS path (issue #22)."""
         input_track = transport._audio_input
         if input_track is None:
             return
         while True:
             frame = await input_track.read_frame()
             if frame is None:
-                if not state.is_listening:
+                if not state.is_listening and not state.is_playing:
                     await asyncio.sleep(0.05)
                     continue
                 continue
+            await handle_audio_samples(
+                transport, state, frame, MAX_AUDIO_BUFFER_SAMPLES, log_prefix=state.log_prefix
+            )
 
-            if append_audio_samples(state, frame, MAX_AUDIO_BUFFER_SAMPLES):
-                state.buffer_overflow.set()
-                return
+    async def _dispatch_pipeline(s: VoiceSessionState) -> None:
+        """Dispatch the current buffer to the pipeline as a cancelable task."""
+        s.pipeline_task = asyncio.create_task(_run_pipeline(s.audio_buffer))
 
     async def _on_start_listening(s: VoiceSessionState) -> None:
-        """WebRTC-specific start_listening hook: reset overflow + start RTP collector."""
-        if s.buffer_overflow is not None:
-            s.buffer_overflow.clear()
+        """WebRTC-specific start_listening hook: start RTP collector."""
         if transport._audio_input is not None and (
             s.rtp_collector_task is None or s.rtp_collector_task.done()
         ):
             s.rtp_collector_task = asyncio.create_task(_collect_rtp_audio())
 
     async def _on_stop_listening(s: VoiceSessionState) -> None:
-        """WebRTC-specific stop_listening hook: cancel collector + dispatch inline."""
+        """WebRTC-specific stop_listening hook: cancel collector + dispatch."""
         if s.rtp_collector_task is not None and not s.rtp_collector_task.done():
             s.rtp_collector_task.cancel()
             s.rtp_collector_task = None
-        await _dispatch_pipeline_inline(s.audio_buffer)
-        if s.buffer_overflow is not None:
-            s.buffer_overflow.clear()
+        await _dispatch_pipeline(s)
 
     state.on_start_listening = _on_start_listening
     state.on_stop_listening = _on_stop_listening
+    state.dispatch_pipeline = _dispatch_pipeline
 
     try:
         while True:
@@ -904,26 +842,18 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
             if msg_type in ("start_listening", "stop_listening"):
                 await handle_session_message(transport, msg, state)
 
-            elif msg_type == "audio_frame" and state.is_listening:
+            elif msg_type == "audio_frame":
                 try:
                     audio_np = np.frombuffer(base64.b64decode(msg["data"]), dtype=np.float32)
                 except Exception:
                     continue
-
-                if append_audio_samples(state, audio_np, MAX_AUDIO_BUFFER_SAMPLES):
-                    logger.warning(f"{state.log_prefix}Audio buffer cap, processing now")
-                    if state.rtp_collector_task is not None and not state.rtp_collector_task.done():
-                        state.rtp_collector_task.cancel()
-                        state.rtp_collector_task = None
-                    await _dispatch_pipeline_inline(state.audio_buffer)
-                    reset_buffer(state)
-                    if state.buffer_overflow is not None:
-                        state.buffer_overflow.clear()
-
-            if state.buffer_overflow is not None and state.buffer_overflow.is_set():
-                state.buffer_overflow.clear()
-                await _dispatch_pipeline_inline(state.audio_buffer)
-                reset_buffer(state)
+                await handle_audio_samples(
+                    transport,
+                    state,
+                    audio_np,
+                    MAX_AUDIO_BUFFER_SAMPLES,
+                    log_prefix=state.log_prefix,
+                )
 
             elif msg_type in ("ping", "set_voice", "clear_history"):
                 await handle_session_message(transport, msg, state)
@@ -931,6 +861,14 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
     except Exception as e:
         logger.error(f"WebRTC session error ({session_id}): {e}")
     finally:
+        if state.pipeline_task is not None and not state.pipeline_task.done():
+            state.pipeline_task.cancel()
+            try:
+                await state.pipeline_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as cancel_err:
+                logger.debug(f"pipeline_task cleanup error ({session_id}): {cancel_err}")
         remove_session(session_id)
         await transport.close()
         logger.info(f"WebRTC session ended: {session_id}")

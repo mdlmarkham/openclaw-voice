@@ -1343,8 +1343,8 @@ class TestSharedSessionDispatch:
     @pytest.mark.asyncio
     async def test_stop_listening_runs_hook_and_flushes(self):
         """stop_listening invokes the transport hook (the flush point) and
-        resets state. WebRTC's hook is the ONLY way the buffer flushes —
-        proving no VAD auto-endpointing was added."""
+        resets state. Explicit stop_listening remains a valid flush path
+        alongside VAD auto-endpointing (issue #22)."""
         from src.server.session_handler import handle_session_message
 
         t = self._make_fake_transport()
@@ -1414,11 +1414,10 @@ class TestSharedSessionDispatch:
         assert t.sent == [{"type": "history_cleared"}]
 
     def test_webrtc_audio_path_has_no_vad_endpointing(self):
-        """Regression guard for #21: the WebRTC path must still be buffer-fill
-        only. The shared dispatcher does NOT auto-flush on audio — only an
-        explicit stop_listening (or buffer cap) flushes. This asserts the
-        dispatcher returns False (unhandled) for audio messages, so the
-        WebRTC handler's RTP collector just buffers them."""
+        """The shared message dispatcher does NOT handle audio messages
+        directly — the caller routes them to ``handle_audio_samples`` (issue
+        #22), which is where VAD/barge-in live. This keeps message dispatch
+        transport-agnostic."""
         from src.server.session_handler import handle_session_message, VoiceSessionState
 
         async def run():
@@ -1462,6 +1461,175 @@ class TestSharedSessionDispatch:
             "start_listening": True,
             "stop_listening": True,
         }
+
+
+class TestSharedVADAndBargeIn:
+    """Tests for issue #22: VAD auto-endpointing + barge-in on the shared
+    audio path, now used by BOTH WebSocket and WebRTC.
+
+    Before #22, only WS had VAD endpointing/barge-in; WebRTC required an
+    explicit stop_listening. The shared ``handle_audio_samples`` helper
+    gives both transports identical behavior.
+    """
+
+    def _make_fake_transport(self):
+        class FakeTransport:
+            def __init__(self):
+                self.sent = []
+
+            async def send_json(self, data):
+                self.sent.append(data)
+
+            async def send_event(self, event):
+                pass
+
+        return FakeTransport()
+
+    def _make_state(self, **kwargs):
+        from src.server.session_handler import VoiceSessionState
+
+        return VoiceSessionState(**kwargs)
+
+    @pytest.mark.asyncio
+    async def test_vad_speech_end_dispatches_without_stop_listening(self, monkeypatch):
+        """VAD auto-endpointing: a speech_end event triggers pipeline dispatch
+        even with no explicit stop_listening — the acceptance criterion for the
+        WebRTC path."""
+        from src.server.session_handler import handle_audio_samples
+
+        t = self._make_fake_transport()
+        state = self._make_state()
+        state.is_listening = True
+        state.audio_buffer = [np.zeros(100, dtype=np.float32)]
+        state.buffer_samples = 100
+
+        dispatched = []
+
+        async def fake_dispatch(s):
+            dispatched.append(list(s.audio_buffer))
+
+        state.dispatch_pipeline = fake_dispatch
+
+        class FakeVADEndpoint:
+            async def process_async(self, audio):
+                return "speech_end"
+
+        state.vad_endpoint = FakeVADEndpoint()
+
+        class FakeVAD:
+            async def is_speech_async(self, audio):
+                return True
+
+        monkeypatch.setattr("src.server.session_handler.app_state.vad", FakeVAD())
+
+        await handle_audio_samples(t, state, np.zeros(100, dtype=np.float32), 480000)
+
+        assert len(dispatched) == 1
+        # The buffer (with the just-appended frame) was flushed.
+        assert len(dispatched[0]) == 2
+        # VAD cleared, buffer reset, listening off.
+        assert state.vad_endpoint is None
+        assert state.audio_buffer == []
+        assert state.buffer_samples == 0
+
+    @pytest.mark.asyncio
+    async def test_barge_in_cancels_pipeline_and_resumes_listening(self, monkeypatch):
+        """Barge-in: while playing, a speech_start event cancels the in-flight
+        pipeline task and resumes listening — the second acceptance criterion."""
+        from src.server.session_handler import handle_audio_samples
+
+        t = self._make_fake_transport()
+        state = self._make_state()
+        state.is_playing = True
+
+        cancelled = []
+
+        class FakeTask:
+            def done(self):
+                return False
+
+            def cancel(self):
+                cancelled.append(True)
+
+        state.pipeline_task = FakeTask()
+
+        class FakeBargeInVAD:
+            async def process_async(self, audio):
+                return "speech_start"
+
+        state.barge_in_vad = FakeBargeInVAD()
+        monkeypatch.setattr("src.server.session_handler.app_state.vad", object())
+        # build_vad_endpoint returns None when settings.vad_enabled is False (default in tests)
+
+        await handle_audio_samples(t, state, np.zeros(100, dtype=np.float32), 480000)
+
+        assert cancelled == [True]
+        assert state.pipeline_task is None
+        assert state.is_listening is True
+        assert state.barge_in_vad is None
+        assert state.audio_buffer == []
+        assert t.sent == [{"type": "listening_started"}]
+
+    @pytest.mark.asyncio
+    async def test_barge_in_rebuilds_vad_endpoint_when_enabled(self, monkeypatch):
+        """When VAD is enabled, barge-in rebuilds the listening VAD endpoint
+        (min_silence_frames from settings)."""
+        from src.server.session_handler import handle_audio_samples
+
+        monkeypatch.setattr("src.server.config.settings.vad_enabled", True)
+        monkeypatch.setattr("src.server.session_handler.app_state.vad", object())
+        monkeypatch.setattr(
+            "src.server.session_handler.build_vad_endpoint",
+            lambda: "VAD_ENDPOINT",
+        )
+
+        t = self._make_fake_transport()
+        state = self._make_state()
+        state.is_playing = True
+
+        class FakeTask:
+            def done(self):
+                return False
+
+            def cancel(self):
+                pass
+
+        state.pipeline_task = FakeTask()
+
+        class FakeBargeInVAD:
+            async def process_async(self, audio):
+                return "speech_start"
+
+        state.barge_in_vad = FakeBargeInVAD()
+
+        await handle_audio_samples(t, state, np.zeros(100, dtype=np.float32), 480000)
+
+        assert state.is_listening is True
+        assert state.vad_endpoint == "VAD_ENDPOINT"
+
+    @pytest.mark.asyncio
+    async def test_audio_while_idle_is_dropped(self, monkeypatch):
+        """Audio arriving when neither listening nor playing is ignored
+        (matches the original WS handler: the elif is_playing branch only
+        ran when is_listening was False but is_playing True)."""
+        from src.server.session_handler import handle_audio_samples
+
+        t = self._make_fake_transport()
+        state = self._make_state()
+
+        called = []
+
+        async def fake_dispatch(s):
+            called.append(True)
+
+        state.dispatch_pipeline = fake_dispatch
+        monkeypatch.setattr("src.server.session_handler.app_state.vad", None)
+
+        await handle_audio_samples(t, state, np.zeros(100, dtype=np.float32), 480000)
+
+        assert called == []
+        assert state.audio_buffer == []
+        assert t.sent == []
 
 
 class TestIntegration:

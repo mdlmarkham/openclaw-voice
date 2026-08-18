@@ -26,6 +26,22 @@ from . import state as app_state
 MAX_AUDIO_BUFFER_SECONDS = 30
 
 
+async def check_rate_limit(transport: AudioTransport, api_key) -> bool:
+    """Gate a pipeline dispatch on the key's per-minute rate limit.
+
+    Returns True if the dispatch is allowed. When rate-limited, sends the
+    ``rate_limited`` error to the client and returns False. No-op (always
+    True) when auth is disabled (``api_key`` is None) — shared by the WS and
+    WebRTC dispatch paths (issue #36).
+    """
+    from .auth import token_manager  # local import avoids an import cycle
+
+    if api_key is not None and not await token_manager.check_rate_limit(api_key):
+        await transport.send_json({"type": "error", "message": "rate_limited"})
+        return False
+    return True
+
+
 @dataclass
 class VoiceSessionState:
     """Mutable state for a single voice session.

@@ -22,14 +22,17 @@ from loguru import logger
 
 from .auth import PRICING_TIERS, APIKey, token_manager, require_api_key, _validate_and_ratelimit
 from .config import VOICES_DIR, settings
+from .events import AudioChunkEvent
 from .session import SessionContext
 from .session_handler import (
     VoiceSessionState,
     build_vad_endpoint,
+    check_rate_limit,
     handle_audio_samples,
     handle_session_message,
     make_session_context,
     max_audio_buffer_samples,
+    reset_buffer,
 )
 from . import state as app_state
 from .text_utils import sanitize_tts_symbols
@@ -682,17 +685,15 @@ async def websocket_endpoint(websocket: WebSocket):
     async def _on_stop_listening(s: VoiceSessionState) -> None:
         """WS-specific stop_listening hook: clear VAD + rate-limit + dispatch."""
         s.vad_endpoint = None
-        if api_key is not None and not await token_manager.check_rate_limit(api_key):
-            await transport.send_json({"type": "error", "message": "rate_limited"})
-        else:
-            session = make_session_context(s)
-            s.pipeline_task = asyncio.create_task(_run_pipeline(s.audio_buffer, session))
+        if not await check_rate_limit(transport, api_key):
+            return
+        session = make_session_context(s)
+        s.pipeline_task = asyncio.create_task(_run_pipeline(s.audio_buffer, session))
 
     async def _dispatch_pipeline(s: VoiceSessionState) -> None:
         """Dispatch the current buffer to the pipeline as a cancelable task
         (shared cap-flush / VAD auto-stop / barge-in entry point)."""
-        if api_key is not None and not await token_manager.check_rate_limit(api_key):
-            await transport.send_json({"type": "error", "message": "rate_limited"})
+        if not await check_rate_limit(transport, api_key):
             return
         session = make_session_context(s)
         s.pipeline_task = asyncio.create_task(_run_pipeline(s.audio_buffer, session))
@@ -744,6 +745,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # ── WebRTC signaling ─────────────────────────────────────────────
 
+# Strong references to in-flight WebRTC session tasks. asyncio only keeps
+# weak references to tasks, so a fire-and-forget task with no external
+# reference can be GC'd mid-session (issue #38). The done-callback removes
+# the entry once the session ends, so the set never grows unboundedly.
+_webrtc_session_tasks: set[asyncio.Task] = set()
+
 
 @router.post("/api/webrtc/offer")
 async def webrtc_offer(body: dict, api_key: Optional[APIKey] = Depends(require_api_key)):
@@ -764,11 +771,15 @@ async def webrtc_offer(body: dict, api_key: Optional[APIKey] = Depends(require_a
     # wait_connected() here: the client can only open the data channel
     # (which is what wait_connected waits for) AFTER it receives this
     # answer — waiting would deadlock the SDP exchange.
-    asyncio.create_task(_run_webrtc_session(transport))
+    task = asyncio.create_task(_run_webrtc_session(transport, api_key))
+    _webrtc_session_tasks.add(task)
+    task.add_done_callback(_webrtc_session_tasks.discard)
     return result
 
 
-async def _run_webrtc_session(transport: WebRTCTransport) -> None:
+async def _run_webrtc_session(
+    transport: WebRTCTransport, api_key: Optional[APIKey] = None
+) -> None:
     """Background handler for a WebRTC session — mirrors the WebSocket handler flow."""
     session_id = transport._session_id
     logger.info(f"WebRTC session started: {session_id}")
@@ -786,8 +797,20 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
         try:
             if app_state.pipeline is not None:
                 session = make_session_context(state)
+                pcm_bytes_total = 0
                 async for event in app_state.pipeline.process_audio(buf, session):
                     await transport.send_event(event)
+                    if isinstance(event, AudioChunkEvent):
+                        pcm_bytes_total += len(event.data)
+                # Metered usage: deduct from the key's monthly quota after a
+                # successful run (issue #36). No-op when auth is disabled
+                # (api_key is None).
+                if api_key is not None and pcm_bytes_total:
+                    minutes = pcm_bytes_total / 2 / 24000 / 60
+                    if not token_manager.check_monthly_quota(api_key, minutes):
+                        await transport.send_json({"type": "error", "message": "quota_exceeded"})
+                    else:
+                        token_manager.record_usage(api_key, minutes)
         except asyncio.CancelledError:
             logger.debug(f"{state.log_prefix}Pipeline cancelled (barge-in or disconnect)")
             try:
@@ -807,19 +830,35 @@ async def _run_webrtc_session(transport: WebRTCTransport) -> None:
         input_track = transport._audio_input
         if input_track is None:
             return
-        while True:
-            frame = await input_track.read_frame()
-            if frame is None:
-                if not state.is_listening and not state.is_playing:
-                    await asyncio.sleep(0.05)
+        try:
+            while True:
+                frame = await input_track.read_frame()
+                if frame is None:
+                    if not state.is_listening and not state.is_playing:
+                        await asyncio.sleep(0.05)
+                        continue
                     continue
-                continue
-            await handle_audio_samples(
-                transport, state, frame, MAX_AUDIO_BUFFER_SAMPLES, log_prefix=state.log_prefix
-            )
+                await handle_audio_samples(
+                    transport, state, frame, MAX_AUDIO_BUFFER_SAMPLES, log_prefix=state.log_prefix
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # A dead collector would silently freeze the session's audio
+            # input (issue #39) — log it and tell the client.
+            logger.error(f"{state.log_prefix}RTP audio collector failed: {e}")
+            try:
+                await transport.send_json({"type": "error", "message": "audio_input_failed"})
+            except Exception:
+                pass
 
     async def _dispatch_pipeline(s: VoiceSessionState) -> None:
-        """Dispatch the current buffer to the pipeline as a cancelable task."""
+        """Dispatch the current buffer to the pipeline as a cancelable task —
+        the single choke point for VAD auto-stop, buffer-cap overflow, and
+        explicit stop_listening on this transport (issue #36)."""
+        if not await check_rate_limit(transport, api_key):
+            reset_buffer(s)
+            return
         s.pipeline_task = asyncio.create_task(_run_pipeline(s.audio_buffer))
 
     async def _on_start_listening(s: VoiceSessionState) -> None:

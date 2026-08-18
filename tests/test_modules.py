@@ -1632,6 +1632,72 @@ class TestSharedVADAndBargeIn:
         assert t.sent == []
 
 
+class TestRateLimitGate:
+    """Tests for issue #36: the shared rate-limit gate on pipeline dispatch.
+
+    Both WS and WebRTC route every pipeline trigger (VAD auto-stop, buffer
+    overflow, explicit stop_listening) through ``check_rate_limit`` in
+    ``session_handler.py``. These tests exercise the helper directly with a
+    mocked transport + token manager.
+    """
+
+    def _make_fake_transport(self):
+        class FakeTransport:
+            def __init__(self):
+                self.sent = []
+
+            async def send_json(self, data):
+                self.sent.append(data)
+
+        return FakeTransport()
+
+    @pytest.mark.asyncio
+    async def test_allowed_when_no_api_key(self, monkeypatch):
+        """Auth disabled (api_key=None) → always allowed, no error sent."""
+        from src.server.session_handler import check_rate_limit
+
+        t = self._make_fake_transport()
+        allowed = await check_rate_limit(t, None)
+        assert allowed is True
+        assert t.sent == []
+
+    @pytest.mark.asyncio
+    async def test_allowed_within_rate_limit(self, monkeypatch):
+        """Within the per-minute limit → allowed, no error sent."""
+        from src.server.session_handler import check_rate_limit
+
+        class FakeKey:
+            pass
+
+        class FakeTM:
+            async def check_rate_limit(self, key):
+                return True
+
+        monkeypatch.setattr("src.server.auth.token_manager", FakeTM())
+        t = self._make_fake_transport()
+        allowed = await check_rate_limit(t, FakeKey())
+        assert allowed is True
+        assert t.sent == []
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_sends_error(self, monkeypatch):
+        """Over the per-minute limit → error sent, dispatch blocked."""
+        from src.server.session_handler import check_rate_limit
+
+        class FakeKey:
+            pass
+
+        class FakeTM:
+            async def check_rate_limit(self, key):
+                return False
+
+        monkeypatch.setattr("src.server.auth.token_manager", FakeTM())
+        t = self._make_fake_transport()
+        allowed = await check_rate_limit(t, FakeKey())
+        assert allowed is False
+        assert t.sent == [{"type": "error", "message": "rate_limited"}]
+
+
 class TestIntegration:
     """Integration tests for the full pipeline."""
 

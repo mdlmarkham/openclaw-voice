@@ -18,12 +18,16 @@ import time
 
 import numpy as np
 import pytest
-from av import AudioFrame
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# importorskip must run BEFORE any `from <module> import ...` of the same
+# module at collection time, or pytest aborts the whole run with a
+# ModuleNotFoundError instead of skipping this file (issue #35).
 aiortc = pytest.importorskip("aiortc")
+av = pytest.importorskip("av")
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
+from av import AudioFrame
 
 from src.server import state as app_state
 
@@ -65,12 +69,15 @@ class FakePipeline:
 class ClientAudioTrack(MediaStreamTrack):
     """Sends tone frames then silence frames over RTP, paced at ~20ms.
 
-    Cycles tone → silence → tone → silence so barge-in can be detected
-    during playback (the second tone burst arrives while is_playing)."""
+    The tone/silence pattern RECURS indefinitely (cycles=None) so a tone
+    burst is guaranteed to land inside the session's ``is_playing`` window
+    regardless of exact VAD-detection latency or asyncio scheduling — the
+    fixed 2-cycle schedule made the barge-in test's timing fragile (issue
+    #34)."""
 
     kind = "audio"
 
-    def __init__(self, frames, silence_frames=40, cycles=2):
+    def __init__(self, frames, silence_frames=40, cycles=None):
         super().__init__()
         self._frames = list(frames)
         self._silence_frames = silence_frames
@@ -92,10 +99,9 @@ class ClientAudioTrack(MediaStreamTrack):
 
     async def recv(self):
         cycle_len = len(self._frames) + self._silence_frames
-        total = cycle_len * self._cycles
-        if self._idx >= total:
+        if self._cycles is not None and self._idx >= cycle_len * self._cycles:
             await asyncio.sleep(0.1)
-            return self._make_silence(total - 1)
+            return self._make_silence(self._idx - 1)
         pos = self._idx % cycle_len
         self._idx += 1
         await asyncio.sleep(0.02)
@@ -233,8 +239,13 @@ async def test_webrtc_barge_in_over_rtp(webrtc_server):
     2. tone burst → VAD speech_end → pipeline dispatch (is_playing=True)
     3. stop_listening → is_listening=False (the first pipeline task keeps
        running, so is_playing stays True)
-    4. second tone burst → barge-in branch → speech_start → cancels the
-       in-flight task → listening_started"""
+    4. a later tone burst (the track's pattern recurs indefinitely) →
+       barge-in branch → speech_start → cancels the in-flight task →
+       listening_started
+
+    The test polls for each stage rather than sleeping a fixed wall-clock
+    amount, so it doesn't depend on exact VAD latency or asyncio scheduling
+    (issue #34)."""
     pipeline = webrtc_server["pipeline"]
     pipeline.dispatches = 0
 
@@ -248,19 +259,32 @@ async def test_webrtc_barge_in_over_rtp(webrtc_server):
     def on_msg(msg):
         received.append(msg)
 
+    async def wait_for(predicate, timeout=10.0, step=0.1):
+        """Poll until predicate() is truthy or timeout elapses."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            if predicate():
+                return True
+            await asyncio.sleep(step)
+        return False
+
     dc.send('{"type": "start_listening"}')
-    await asyncio.sleep(2)  # tone burst → speech_end → dispatch
 
-    assert pipeline.dispatches >= 1, "first dispatch should come from VAD speech_end"
+    # Stage 1: VAD speech_end auto-dispatches the first pipeline run.
+    assert await wait_for(lambda: pipeline.dispatches >= 1), (
+        "first dispatch should come from VAD speech_end"
+    )
 
+    # Stage 2: explicit stop_listening → is_listening=False. The first
+    # pipeline task keeps running (is_playing stays True).
     dc.send('{"type": "stop_listening"}')
-    await asyncio.sleep(1)  # is_listening=False; first pipeline still playing
 
-    # Second tone burst arrives while playing → barge-in.
-    await asyncio.sleep(2)
+    # Stage 3: a later tone burst (recurring pattern) trips barge-in while
+    # the pipeline is playing → listening_started.
+    def barge_in_seen():
+        return len([m for m in received if '"listening_started"' in m]) >= 2
 
-    listening_started = [m for m in received if '"listening_started"' in m]
-    assert len(listening_started) >= 2, (
-        f"expected listening_started on start + barge-in, got {len(listening_started)}"
+    assert await wait_for(barge_in_seen), (
+        "expected a second listening_started from barge-in during playback"
     )
     await pc.close()
